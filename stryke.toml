@@ -1,0 +1,19 @@
+[package]
+name = "mongo"
+version = "0.1.0"
+description = "MongoDB client for stryke. Find / insert / update / delete / aggregate / index admin against any mongo 5.0+ replica set or standalone."
+authors = ["MenkeTechnologies"]
+license = "MIT"
+repository = "https://github.com/MenkeTechnologies/stryke-mongo"
+edition = "2026"
+
+[bin]
+mongo = "bin/mongo.stk"
+mongo-build = "bin/mongo-build.stk"
+
+[scripts]
+build = "cargo build --release"
+build-debug = "cargo build"
+clean = "cargo clean"
+test = "s test t/"
+install = "s pkg install -g ."

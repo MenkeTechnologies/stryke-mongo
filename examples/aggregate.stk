@@ -1,0 +1,31 @@
+#!/usr/bin/env stryke
+# examples/aggregate.stk — group + project + sort in an aggregation pipeline.
+# Run:   MONGODB_URI=mongodb://localhost s examples/aggregate.stk
+
+use Mongo
+
+my $t = "demo/orders"
+
+# Seed a few docs.
+Mongo::insert_many $t, [
+    { customer => "alice", item => "book",  qty => 2, total => 30 },
+    { customer => "alice", item => "lamp",  qty => 1, total => 50 },
+    { customer => "bob",   item => "book",  qty => 1, total => 15 },
+    { customer => "bob",   item => "chair", qty => 1, total => 80 },
+    { customer => "dana",  item => "book",  qty => 4, total => 60 },
+]
+
+# Group by customer, sum totals, sort descending.
+my @top = Mongo::aggregate $t, [
+    { '$group' => { _id => '$customer',
+                    total => { '$sum' => '$total' },
+                    items => { '$sum' => '$qty' } } },
+    { '$sort'  => { total => -1 } },
+]
+
+p "customer revenue:"
+for my $r (@top) {
+    p sprintf("  %-10s \$%d (%d items)", $r->{_id}, $r->{total}, $r->{items})
+}
+
+Mongo::delete_many $t, {}

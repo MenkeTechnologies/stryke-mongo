@@ -1,0 +1,119 @@
+# t/test_mongo.stk — round-trip against a live MongoDB.
+#
+# Skips when the helper isn't built or no mongo is reachable. Local dev:
+#   mongod --dbpath /tmp/mdb --port 27017
+#
+# Uses a unique collection `stryke_test_$$` and cleans up at exit.
+
+require "./lib/Mongo.stk"
+
+my $have_helper = eval { Mongo::helper_path(); 1 }
+unless ($have_helper) {
+    p "1..0 # SKIP helper not built — run `cargo build --release` first"
+    exit 0
+}
+
+my %conn
+$conn{uri} = $ENV{MONGODB_URI} if defined $ENV{MONGODB_URI}
+unless (Mongo::ping(%conn)) {
+    p "1..0 # SKIP MongoDB unreachable"
+    exit 0
+}
+
+my $coll = "stryke_test_$$"
+my $tgt  = "stryke_test/$coll"
+p "1..9"
+my $i = 0
+
+# 1. insert_one
+my $r
+eval { $r = Mongo::insert_one($tgt, { name => "alice", age => 30, role => "admin" }, %conn) }
+$i++
+p $@ ? "not ok $i - insert_one: $@" :
+       (defined $r->{inserted_id} ? "ok $i - insert_one" : "not ok $i - insert_one wrong shape")
+
+# 2. insert_many
+eval {
+    $r = Mongo::insert_many($tgt,
+        [{ name => "bob", age => 25 },
+         { name => "charlie", age => 35 },
+         { name => "dana", age => 28 }],
+        %conn)
+}
+$i++
+p $@ ? "not ok $i - insert_many: $@" :
+       ($r->{inserted} == 3 ? "ok $i - insert_many" : "not ok $i - inserted=$r->{inserted}")
+
+# 3. count
+my $n
+eval { $n = Mongo::count($tgt, %conn) }
+$i++
+p $@ ? "not ok $i - count: $@" : ($n == 4 ? "ok $i - count" : "not ok $i - count=$n")
+
+# 4. find with filter+sort+limit
+my @docs
+eval {
+    @docs = Mongo::find($tgt,
+                        filter => { age => { '$gte' => 28 } },
+                        sort   => { age => 1 },
+                        limit  => 10,
+                        %conn)
+}
+$i++
+p $@ ? "not ok $i - find: $@" :
+       (len(@docs) == 3 && $docs[0]->{name} eq "dana"
+            ? "ok $i - find (sorted)"
+            : "not ok $i - find shape: " . to_json(\@docs))
+
+# 5. find_one
+my $one
+eval { $one = Mongo::find_one($tgt, filter => { name => "alice" }, %conn) }
+$i++
+p $@ ? "not ok $i - find_one: $@" :
+       (defined $one && $one->{name} eq "alice" && $one->{role} eq "admin"
+            ? "ok $i - find_one"
+            : "not ok $i - find_one wrong")
+
+# 6. update_one
+eval {
+    $r = Mongo::update_one($tgt,
+                          { name => "alice" },
+                          { '$set' => { role => "superadmin", level => 99 } },
+                          %conn)
+}
+$i++
+p $@ ? "not ok $i - update_one: $@" :
+       ($r->{matched} == 1 && $r->{modified} == 1
+            ? "ok $i - update_one"
+            : "not ok $i - update_one wrong")
+
+# 7. aggregate
+my @grouped
+eval {
+    @grouped = Mongo::aggregate($tgt,
+        [ { '$group' => { _id => '$role', n => { '$sum' => 1 } } } ],
+        %conn)
+}
+$i++
+p $@ ? "not ok $i - aggregate: $@" :
+       (len(@grouped) >= 1 ? "ok $i - aggregate (#{len(@grouped)} groups)" :
+        "not ok $i - aggregate empty")
+
+# 8. create_index
+my $idx
+eval { $idx = Mongo::create_index($tgt, { name => 1 }, unique => 1, %conn) }
+$i++
+p $@ ? "not ok $i - create_index: $@" :
+       ($idx->{name} eq "name_1" ? "ok $i - create_index" :
+        "not ok $i - create_index got $idx->{name}")
+
+# 9. delete_many + drop collection
+my $del
+eval { $del = Mongo::delete_many($tgt, {}, %conn) }
+$i++
+p $@ ? "not ok $i - delete_many: $@" :
+       ($del->{deleted} == 4 ? "ok $i - delete_many" :
+        "not ok $i - deleted=$del->{deleted}")
+
+# cleanup: drop the index then the collection (best-effort)
+eval { Mongo::drop_index($tgt, "name_1", %conn) }

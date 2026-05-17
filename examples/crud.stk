@@ -1,0 +1,32 @@
+#!/usr/bin/env stryke
+# examples/crud.stk — basic CRUD round-trip.
+# Run:   MONGODB_URI=mongodb://localhost s examples/crud.stk
+
+use Mongo
+
+my $t = "demo/users"
+
+my $r = Mongo::insert_one $t, { name => "alice", age => 30, tags => ["admin","analyst"] }
+p "inserted: " . to_json($r->{inserted_id})
+
+Mongo::insert_many $t, [
+    { name => "bob",     age => 25 },
+    { name => "charlie", age => 35 },
+    { name => "dana",    age => 28 },
+]
+
+p "count: " . Mongo::count($t)
+
+my @over28 = Mongo::find $t, filter => { age => { '$gt' => 28 } }, sort => { age => -1 }
+p "over-28:"
+for my $u (@over28) {
+    p "  $u->{name} (age $u->{age})"
+}
+
+Mongo::update_one $t, { name => "alice" }, { '$inc' => { age => 1 } }
+
+p "after birthday:"
+p to_json Mongo::find_one($t, filter => { name => "alice" })
+
+Mongo::delete_many $t, {}
+p "cleaned up"

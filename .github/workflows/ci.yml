@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --all-targets --locked
+
+  test:
+    name: Test
+    runs-on: ${{ matrix.os }}
+    env:
+      RUST_BACKTRACE: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --no-fail-fast
+
+  helper-live-mongo:
+    name: Helper end-to-end (mongo:7)
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd="mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -x 1"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked
+
+      - name: ping + CRUD + aggregate + index
+        run: |
+          set -euo pipefail
+          H=./target/release/stryke-mongo-helper
+          $H ping | jq -e '.ok == 1'
+          $H insert-one ci/users --doc='{"name":"alice","age":30,"role":"admin"}' | jq -e '.inserted_id'
+          printf '{"name":"bob","age":25}\n{"name":"charlie","age":35}\n{"name":"dana","age":28}\n' \
+            | $H insert-many ci/users | jq -e '.inserted == 3'
+          $H count ci/users | jq -e '.count == 4'
+          $H find ci/users --sort='{"age":1}' --limit=1 | jq -e '.name == "bob"'
+          $H find-one ci/users --filter='{"name":"alice"}' | jq -e '.role == "admin"'
+          $H update-one ci/users --filter='{"name":"alice"}' --update='{"$set":{"role":"superadmin"}}' \
+            | jq -e '.matched == 1 and .modified == 1'
+          $H aggregate ci/users --pipeline='[{"$group":{"_id":null,"n":{"$sum":1}}}]' | jq -e '.n == 4'
+          $H create-index ci/users --keys='{"name":1}' --unique | jq -e '.name == "name_1"'
+          $H indexes ci/users | grep -q name_1
+          $H delete-many ci/users --filter='{}' | jq -e '.deleted == 4'
+          $H list-databases | grep -q ci
+
+  doc:
+    name: Doc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --locked
+
+  release-build:
+    name: Release Build (${{ matrix.target }})
+    needs: [check, test, helper-live-mongo]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stryke-mongo-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/stryke-mongo-helper
