@@ -1,12 +1,46 @@
-# stryke-mongo
+```
+ ███████╗████████╗██████╗ ██╗   ██╗██╗  ██╗███████╗
+ ██╔════╝╚══██╔══╝██╔══██╗╚██╗ ██╔╝██║ ██╔╝██╔════╝
+ ███████╗   ██║   ██████╔╝ ╚████╔╝ █████╔╝ █████╗
+ ╚════██║   ██║   ██╔══██╗  ╚██╔╝  ██╔═██╗ ██╔══╝
+ ███████║   ██║   ██║  ██║   ██║   ██║  ██╗███████╗
+ ╚══════╝   ╚═╝   ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝
+                   [ m o n g o ]
+```
+
+[![CI](https://github.com/MenkeTechnologies/stryke-mongo/actions/workflows/ci.yml/badge.svg)](https://github.com/MenkeTechnologies/stryke-mongo/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![stryke](https://img.shields.io/badge/stryke-package-cyan.svg)](https://github.com/MenkeTechnologies/strykelang)
+
+### `[MONGODB CLIENT FOR STRYKE // CRUD + AGGREGATION + INDEX ADMIN]`
+
+> *"Documents, one stryke pipe at a time."*
 
 MongoDB client for stryke. CRUD, aggregation, index admin against any
 MongoDB 5.0+ standalone, replica set, or sharded cluster. Opt-in package
 tier.
 
-Created by MenkeTechnologies.
+### [`strykelang`](https://github.com/MenkeTechnologies/strykelang) &middot; [`MenkeTechnologiesMeta`](https://github.com/MenkeTechnologies/MenkeTechnologiesMeta) · [`stryke-mysql`](https://github.com/MenkeTechnologies/stryke-mysql) · [`stryke-postgres`](https://github.com/MenkeTechnologies/stryke-postgres) · [`stryke-redis`](https://github.com/MenkeTechnologies/stryke-redis) · [`stryke-demo`](https://github.com/MenkeTechnologies/stryke-demo)
 
-## Install
+---
+
+## Table of Contents
+
+- [\[0x00\] Install](#0x00-install)
+- [\[0x01\] Quick start](#0x01-quick-start)
+- [\[0x02\] CLI: `mongo`](#0x02-cli-mongo)
+- [\[0x03\] API reference](#0x03-api-reference)
+- [\[0x04\] BSON type encoding](#0x04-bson-type-encoding)
+- [\[0x05\] Helper protocol](#0x05-helper-protocol)
+- [\[0x06\] Tests](#0x06-tests)
+- [\[0x07\] Dev workflow](#0x07-dev-workflow)
+- [\[0x08\] Layout](#0x08-layout)
+- [\[0x09\] Roadmap](#0x09-roadmap)
+- [\[0xFF\] License](#0xff-license)
+
+---
+
+## [0x00] Install
 
 ```sh
 cd ~/projects/stryke-mongo
@@ -20,7 +54,7 @@ Or:
 make install
 ```
 
-## Quick start
+## [0x01] Quick start
 
 ```stryke
 use Mongo
@@ -85,7 +119,7 @@ my %prod = (uri => "mongodb+srv://user:pass\@cluster.example.com")
 Mongo::find "logs/errors", filter => {...}, %prod
 ```
 
-## CLI: `mongo`
+## [0x02] CLI: `mongo`
 
 ```sh
 mongo find       app/users --filter='{"age":{"$gt":30}}' --sort='{"age":-1}' --limit=20
@@ -118,7 +152,7 @@ Global flags (also env vars):
 -u, --uri URI         $MONGODB_URI       # mongodb:// or mongodb+srv://
 ```
 
-## API reference
+## [0x03] API reference
 
 ### Read paths
 
@@ -161,7 +195,7 @@ Mongo::ensure_built()   → $abs_path
 Mongo::version()        → "stryke-mongo-helper 0.1.0"
 ```
 
-## BSON type encoding
+## [0x04] BSON type encoding
 
 The helper converts BSON ↔ JSON via MongoDB's **relaxed extended JSON**
 format, so non-JSON types round-trip cleanly:
@@ -187,7 +221,7 @@ You can pass extended-JSON wrappers back through filters / updates: a
 filter like `{"_id": {"$oid": "65f9…"}}` will be re-parsed to a real
 `ObjectId` before hitting the wire.
 
-## Helper protocol
+## [0x05] Helper protocol
 
 ```sh
 stryke-mongo-helper find app/users --filter='{"name":"alice"}' --limit=10
@@ -204,7 +238,7 @@ Output:
 * writes / metadata → single JSON summary
 * errors → stderr + non-zero exit
 
-## Tests
+## [0x06] Tests
 
 ```sh
 cargo test                            # compiles, no live calls
@@ -220,7 +254,7 @@ brew install mongodb-community
 mongod --dbpath /tmp/mdb --port 27017 &
 ```
 
-## Dev workflow
+## [0x07] Dev workflow
 
 ```sh
 make             # release build
@@ -230,7 +264,7 @@ make install
 make clean
 ```
 
-## Layout
+## [0x08] Layout
 
 ```
 stryke-mongo/
@@ -254,7 +288,7 @@ stryke-mongo/
     release.yml                    # cross-compile + GH release on tag push
 ```
 
-## Roadmap
+## [0x09] Roadmap
 
 | v1 (this release) | v2+ |
 |---|---|
@@ -264,6 +298,6 @@ stryke-mongo/
 | BSON filters / updates / pipelines | GridFS read/write |
 | `mongodb` 3.x async | Transactions (replica set required) |
 
-## License
+## [0xFF] License
 
 MIT.
