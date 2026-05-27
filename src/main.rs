@@ -547,3 +547,158 @@ async fn cmd_ping(client: &Client) -> Result<()> {
         .context("ping")?;
     emit_json(&doc_to_json(&r))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bson::Bson;
+
+    // ─── parse_target ────────────────────────────────────────────────
+
+    #[test]
+    fn parse_target_slash_separator() {
+        let (db, c) = parse_target("mydb/users").unwrap();
+        assert_eq!(db, "mydb");
+        assert_eq!(c, "users");
+    }
+
+    #[test]
+    fn parse_target_dot_separator() {
+        let (db, c) = parse_target("mydb.events").unwrap();
+        assert_eq!(db, "mydb");
+        assert_eq!(c, "events");
+    }
+
+    #[test]
+    fn parse_target_slash_wins_when_both_present() {
+        // split_once('/') runs first → uses slash boundary.
+        let (db, c) = parse_target("a.b/c.d").unwrap();
+        assert_eq!(db, "a.b");
+        assert_eq!(c, "c.d");
+    }
+
+    #[test]
+    fn parse_target_missing_separator_errors() {
+        let err = parse_target("noseparator").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("DB/COLLECTION"), "msg = {msg}");
+    }
+
+    #[test]
+    fn parse_target_empty_db_or_coll_allowed_caller_validates() {
+        // The parser is liberal — empty halves accepted; downstream
+        // call_to_mongo errors clearly. Pinning current behavior so a
+        // future tightening is a deliberate breaking change.
+        let (db, c) = parse_target("/foo").unwrap();
+        assert_eq!(db, "");
+        assert_eq!(c, "foo");
+        let (db, c) = parse_target("bar/").unwrap();
+        assert_eq!(db, "bar");
+        assert_eq!(c, "");
+    }
+
+    // ─── parse_doc ───────────────────────────────────────────────────
+
+    #[test]
+    fn parse_doc_simple_object() {
+        let d = parse_doc(r#"{"name":"alice","age":30}"#).unwrap();
+        assert_eq!(d.get_str("name").unwrap(), "alice");
+        assert_eq!(d.get_i32("age").unwrap(), 30);
+    }
+
+    #[test]
+    fn parse_doc_empty_object() {
+        let d = parse_doc("{}").unwrap();
+        assert_eq!(d.len(), 0);
+    }
+
+    #[test]
+    fn parse_doc_invalid_json_errors() {
+        let err = parse_doc("{not valid json}").unwrap_err();
+        assert!(format!("{err}").to_lowercase().contains("parsing"));
+    }
+
+    #[test]
+    fn parse_doc_array_not_object_errors() {
+        let err = parse_doc("[1,2,3]").unwrap_err();
+        assert!(format!("{err}").contains("object"));
+    }
+
+    #[test]
+    fn parse_doc_string_not_object_errors() {
+        let err = parse_doc(r#""just a string""#).unwrap_err();
+        assert!(format!("{err}").contains("object"));
+    }
+
+    #[test]
+    fn parse_doc_nested_object() {
+        let d = parse_doc(r#"{"outer":{"inner":42}}"#).unwrap();
+        let inner = d.get_document("outer").unwrap();
+        assert_eq!(inner.get_i32("inner").unwrap(), 42);
+    }
+
+    // ─── doc_to_json / bson_to_json (relaxed extended JSON) ──────────
+
+    #[test]
+    fn doc_to_json_roundtrip_scalars() {
+        let mut d = Document::new();
+        d.insert("name", "bob");
+        d.insert("count", 99i32);
+        let j = doc_to_json(&d);
+        assert_eq!(j["name"], "bob");
+        assert_eq!(j["count"], 99);
+    }
+
+    #[test]
+    fn doc_to_json_does_not_mutate_input() {
+        let mut d = Document::new();
+        d.insert("k", "v");
+        let len_before = d.len();
+        let _ = doc_to_json(&d);
+        assert_eq!(d.len(), len_before);
+    }
+
+    #[test]
+    fn bson_to_json_int64_relaxed_form() {
+        // Relaxed extJSON: i64 in safe range emits as plain JSON number,
+        // not the canonical {"$numberLong": "..."} form.
+        let b = Bson::Int64(123_456);
+        let j = bson_to_json(&b);
+        assert_eq!(j, serde_json::json!(123_456));
+    }
+
+    #[test]
+    fn bson_to_json_null_round_trips() {
+        let b = Bson::Null;
+        assert_eq!(bson_to_json(&b), serde_json::Value::Null);
+    }
+
+    // ─── emit_ndjson (generic line writer) ───────────────────────────
+
+    #[test]
+    fn emit_ndjson_appends_newline() {
+        let mut buf = Vec::new();
+        emit_ndjson(&mut buf, &serde_json::json!({"a": 1})).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(s, "{\"a\":1}\n");
+    }
+
+    #[test]
+    fn emit_ndjson_multiple_calls_one_line_each() {
+        let mut buf = Vec::new();
+        emit_ndjson(&mut buf, &serde_json::json!({"a": 1})).unwrap();
+        emit_ndjson(&mut buf, &serde_json::json!({"b": 2})).unwrap();
+        emit_ndjson(&mut buf, &serde_json::json!({"c": 3})).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(s.lines().count(), 3);
+        assert!(s.ends_with('\n'));
+    }
+
+    #[test]
+    fn emit_ndjson_handles_unicode() {
+        let mut buf = Vec::new();
+        emit_ndjson(&mut buf, &serde_json::json!({"name": "日本語"})).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(s.contains("日本語") || s.contains("\\u65e5"));
+    }
+}
