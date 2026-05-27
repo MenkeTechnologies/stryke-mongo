@@ -701,4 +701,241 @@ mod tests {
         let s = String::from_utf8(buf).unwrap();
         assert!(s.contains("日本語") || s.contains("\\u65e5"));
     }
+
+    #[test]
+    fn bson_to_json_bool() {
+        assert_eq!(bson_to_json(&Bson::Boolean(true)), serde_json::json!(true));
+    }
+
+    #[test]
+    fn bson_to_json_double() {
+        let j = bson_to_json(&Bson::Double(2.5));
+        assert_eq!(j, serde_json::json!(2.5));
+    }
+
+    #[test]
+    fn bson_to_json_array() {
+        let b = Bson::Array(vec![Bson::Int32(1), Bson::String("a".into())]);
+        let j = bson_to_json(&b);
+        assert_eq!(j, serde_json::json!([1, "a"]));
+    }
+
+    #[test]
+    fn parse_doc_oid_extended_json() {
+        let d = parse_doc(r#"{"_id":{"$oid":"507f1f77bcf86cd799439011"}}"#).unwrap();
+        assert!(d.contains_key("_id"));
+    }
+
+    #[test]
+    fn parse_target_collection_with_underscore() {
+        let (db, c) = parse_target("analytics/events_raw").unwrap();
+        assert_eq!(db, "analytics");
+        assert_eq!(c, "events_raw");
+    }
+
+    #[test]
+    fn doc_to_json_nested_document() {
+        let mut inner = Document::new();
+        inner.insert("x", 1i32);
+        let mut d = Document::new();
+        d.insert("nested", inner);
+        let j = doc_to_json(&d);
+        assert_eq!(j["nested"]["x"], 1);
+    }
+
+    #[test]
+    fn parse_doc_null_value() {
+        let d = parse_doc(r#"{"k":null}"#).unwrap();
+        assert!(matches!(d.get("k"), Some(Bson::Null)));
+    }
+
+    #[test]
+    fn bson_to_json_document_nested() {
+        let mut inner = Document::new();
+        inner.insert("x", 1i32);
+        let b = Bson::Document(inner);
+        assert_eq!(bson_to_json(&b)["x"], 1);
+    }
+
+    #[test]
+    fn bson_to_json_binary_relaxed() {
+        let b = Bson::Binary(bson::Binary {
+            subtype: bson::spec::BinarySubtype::Generic,
+            bytes: b"\x00\x01".to_vec(),
+        });
+        let j = bson_to_json(&b);
+        assert!(j.is_object() || j.is_string());
+    }
+
+    #[test]
+    fn parse_target_collection_with_dots_in_name() {
+        let (db, c) = parse_target("db.coll.name").unwrap();
+        assert_eq!(db, "db");
+        assert_eq!(c, "coll.name");
+    }
+
+    #[test]
+    fn doc_to_json_empty_document() {
+        let d = Document::new();
+        let j = doc_to_json(&d);
+        assert!(j.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_doc_boolean_fields() {
+        let d = parse_doc(r#"{"ok":true,"fail":false}"#).unwrap();
+        assert_eq!(d.get_bool("ok").unwrap(), true);
+        assert_eq!(d.get_bool("fail").unwrap(), false);
+    }
+
+    #[test]
+    fn bson_to_json_string_utf8() {
+        assert_eq!(bson_to_json(&Bson::String("hi".into())), serde_json::json!("hi"));
+    }
+
+    #[test]
+    fn parse_doc_array_field_value() {
+        let d = parse_doc(r#"{"tags":["a","b"]}"#).unwrap();
+        let arr = d.get_array("tags").unwrap();
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn bson_to_json_double_zero() {
+        assert_eq!(bson_to_json(&Bson::Double(0.0)), serde_json::json!(0.0));
+    }
+
+    #[test]
+    fn parse_doc_i32_field() {
+        let d = parse_doc(r#"{"n":42}"#).unwrap();
+        assert_eq!(d.get_i32("n").unwrap(), 42);
+    }
+
+    #[test]
+    fn parse_target_long_db_and_coll_names() {
+        let (db, c) = parse_target("warehouse_2024/sales_by_region").unwrap();
+        assert_eq!(db, "warehouse_2024");
+        assert_eq!(c, "sales_by_region");
+    }
+
+    #[test]
+    fn doc_to_json_preserves_bool() {
+        let mut d = Document::new();
+        d.insert("ok", false);
+        assert_eq!(doc_to_json(&d)["ok"], false);
+    }
+
+    #[test]
+    fn parse_doc_rejects_number_top_level() {
+        assert!(parse_doc("42").is_err());
+    }
+
+    #[test]
+    fn bson_to_json_int32() {
+        assert_eq!(bson_to_json(&Bson::Int32(7)), serde_json::json!(7));
+    }
+
+    #[test]
+    fn bson_to_json_int64_large() {
+        let b = Bson::Int64(9_000_000_000);
+        let j = bson_to_json(&b);
+        assert_eq!(j, serde_json::json!(9_000_000_000i64));
+    }
+
+    #[test]
+    fn parse_target_single_slash_only() {
+        let (db, c) = parse_target("onlydb/coll").unwrap();
+        assert_eq!(db, "onlydb");
+        assert_eq!(c, "coll");
+    }
+
+    #[test]
+    fn parse_doc_empty_string_value() {
+        let d = parse_doc(r#"{"k":""}"#).unwrap();
+        assert_eq!(d.get_str("k").unwrap(), "");
+    }
+
+    #[test]
+    fn bson_to_json_array_empty() {
+        assert_eq!(bson_to_json(&Bson::Array(vec![])), serde_json::json!([]));
+    }
+
+    #[test]
+    fn doc_to_json_multiple_fields() {
+        let mut d = Document::new();
+        d.insert("a", 1i32);
+        d.insert("b", "x");
+        let j = doc_to_json(&d);
+        assert_eq!(j["a"], 1);
+        assert_eq!(j["b"], "x");
+    }
+
+    #[test]
+    fn parse_target_db_with_hyphen() {
+        let (db, c) = parse_target("my-db/events").unwrap();
+        assert_eq!(db, "my-db");
+        assert_eq!(c, "events");
+    }
+
+    #[test]
+    fn parse_doc_float_field() {
+        let d = parse_doc(r#"{"x":1.5}"#).unwrap();
+        assert_eq!(d.get_f64("x").unwrap(), 1.5);
+    }
+
+    #[test]
+    fn emit_ndjson_null_value() {
+        let mut buf = Vec::new();
+        emit_ndjson(&mut buf, &serde_json::Value::Null).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "null\n");
+    }
+
+    #[test]
+    fn parse_doc_negative_int() {
+        let d = parse_doc(r#"{"n":-1}"#).unwrap();
+        assert_eq!(d.get_i32("n").unwrap(), -1);
+    }
+
+    #[test]
+    fn bson_to_json_boolean_false() {
+        assert_eq!(bson_to_json(&Bson::Boolean(false)), serde_json::json!(false));
+    }
+
+    #[test]
+    fn parse_target_leading_slash_liberal() {
+        let (db, c) = parse_target("/db/coll").unwrap();
+        assert_eq!(db, "");
+        assert_eq!(c, "db/coll");
+    }
+
+    #[test]
+    fn doc_to_json_int64_field() {
+        let mut d = Document::new();
+        d.insert("n", 1_000_000_000i64);
+        assert_eq!(doc_to_json(&d)["n"], 1_000_000_000);
+    }
+
+    #[test]
+    fn parse_doc_empty_object_string() {
+        assert_eq!(parse_doc("{}").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn emit_ndjson_number() {
+        let mut buf = Vec::new();
+        emit_ndjson(&mut buf, &serde_json::json!(7)).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "7\n");
+    }
+
+    #[test]
+    fn parse_doc_string_with_quotes() {
+        let d = parse_doc(r#"{"msg":"say \"hi\""}"#).unwrap();
+        assert_eq!(d.get_str("msg").unwrap(), "say \"hi\"");
+    }
+
+    #[test]
+    fn bson_to_json_array_of_bools() {
+        let b = Bson::Array(vec![Bson::Boolean(true), Bson::Boolean(false)]);
+        assert_eq!(bson_to_json(&b), serde_json::json!([true, false]));
+    }
 }
