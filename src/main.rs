@@ -987,4 +987,56 @@ mod tests {
     fn parse_target_no_separator_errors() {
         assert!(parse_target("nosep").is_err());
     }
+
+    #[test]
+    fn parse_doc_i64_field() {
+        let d = parse_doc(r#"{"n":9223372036854775807}"#).unwrap();
+        assert_eq!(d.get_i64("n").unwrap(), 9223372036854775807);
+    }
+
+    #[test]
+    fn bson_to_json_double_negative() {
+        assert_eq!(bson_to_json(&Bson::Double(-1.5)), serde_json::json!(-1.5));
+    }
+
+    #[test]
+    fn emit_ndjson_false_bool() {
+        let mut buf = Vec::new();
+        emit_ndjson(&mut buf, &serde_json::json!(false)).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "false\n");
+    }
+
+    #[test]
+    fn parse_target_slash_db_coll() {
+        let (db, c) = parse_target("analytics/events").unwrap();
+        assert_eq!(db, "analytics");
+        assert_eq!(c, "events");
+    }
+
+    #[test]
+    fn doc_to_json_bool_field() {
+        let mut d = Document::new();
+        d.insert("ok", true);
+        assert_eq!(doc_to_json(&d)["ok"], serde_json::json!(true));
+    }
+
+    #[test]
+    fn parse_doc_empty_array() {
+        let d = parse_doc(r#"{"items":[]}"#).unwrap();
+        assert!(d.get_array("items").unwrap().is_empty());
+    }
+
+    #[test]
+    fn bson_to_json_binary_empty() {
+        let b = Bson::Binary(bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: vec![] });
+        let j = bson_to_json(&b);
+        assert!(j.get("$binary").is_some() || j.is_object());
+    }
+
+    #[test]
+    fn parse_target_underscore_in_db() {
+        let (db, c) = parse_target("my_db.coll").unwrap();
+        assert_eq!(db, "my_db");
+        assert_eq!(c, "coll");
+    }
 }
