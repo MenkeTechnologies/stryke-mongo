@@ -938,4 +938,53 @@ mod tests {
         let b = Bson::Array(vec![Bson::Boolean(true), Bson::Boolean(false)]);
         assert_eq!(bson_to_json(&b), serde_json::json!([true, false]));
     }
+
+    #[test]
+    fn parse_doc_u64_in_range() {
+        let d = parse_doc(r#"{"n":100}"#).unwrap();
+        assert_eq!(d.get_i32("n").unwrap(), 100);
+    }
+
+    #[test]
+    fn bson_to_json_string_empty() {
+        assert_eq!(bson_to_json(&Bson::String(String::new())), serde_json::json!(""));
+    }
+
+    #[test]
+    fn parse_target_dot_in_collection_name() {
+        let (db, c) = parse_target("mydb.ev.ents").unwrap();
+        assert_eq!(db, "mydb");
+        assert_eq!(c, "ev.ents");
+    }
+
+    #[test]
+    fn doc_to_json_array_field() {
+        let mut d = Document::new();
+        d.insert("tags", vec!["a", "b"]);
+        let j = doc_to_json(&d);
+        assert_eq!(j["tags"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn emit_ndjson_bool_true() {
+        let mut buf = Vec::new();
+        emit_ndjson(&mut buf, &serde_json::json!(true)).unwrap();
+        assert_eq!(String::from_utf8(buf).unwrap(), "true\n");
+    }
+
+    #[test]
+    fn parse_doc_nested_array() {
+        let d = parse_doc(r#"{"matrix":[[1,2],[3,4]]}"#).unwrap();
+        assert!(d.get_array("matrix").unwrap().len() == 2);
+    }
+
+    #[test]
+    fn bson_to_json_document_empty() {
+        assert_eq!(bson_to_json(&Bson::Document(Document::new())), serde_json::json!({}));
+    }
+
+    #[test]
+    fn parse_target_no_separator_errors() {
+        assert!(parse_target("nosep").is_err());
+    }
 }
