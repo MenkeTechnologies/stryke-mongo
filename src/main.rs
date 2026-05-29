@@ -66,9 +66,7 @@ enum Cmd {
         doc: String,
     },
     /// Insert NDJSON from stdin, one document per line.
-    InsertMany {
-        target: String,
-    },
+    InsertMany { target: String },
     /// Update at most one document.
     UpdateOne {
         target: String,
@@ -136,10 +134,7 @@ enum Cmd {
         name: Option<String>,
     },
     /// Drop an index by name.
-    DropIndex {
-        target: String,
-        name: String,
-    },
+    DropIndex { target: String, name: String },
     /// List indexes on a collection.
     Indexes { target: String },
     /// `db.runCommand({ping:1})`.
@@ -158,32 +153,61 @@ async fn main() {
 async fn run(cli: Cli) -> Result<()> {
     let client = make_client(&cli.conn).await?;
     match cli.cmd {
-        Cmd::Find { target, filter, projection, sort, limit, skip } => {
-            cmd_find(&client, &target, &filter, projection.as_deref(), sort.as_deref(), limit, skip).await
+        Cmd::Find {
+            target,
+            filter,
+            projection,
+            sort,
+            limit,
+            skip,
+        } => {
+            cmd_find(
+                &client,
+                &target,
+                &filter,
+                projection.as_deref(),
+                sort.as_deref(),
+                limit,
+                skip,
+            )
+            .await
         }
-        Cmd::FindOne { target, filter, projection } => {
-            cmd_find_one(&client, &target, &filter, projection.as_deref()).await
-        }
+        Cmd::FindOne {
+            target,
+            filter,
+            projection,
+        } => cmd_find_one(&client, &target, &filter, projection.as_deref()).await,
         Cmd::InsertOne { target, doc } => cmd_insert_one(&client, &target, &doc).await,
         Cmd::InsertMany { target } => cmd_insert_many(&client, &target).await,
-        Cmd::UpdateOne { target, filter, update, upsert } => {
-            cmd_update(&client, &target, &filter, &update, false, upsert).await
-        }
-        Cmd::UpdateMany { target, filter, update } => {
-            cmd_update(&client, &target, &filter, &update, true, false).await
-        }
-        Cmd::ReplaceOne { target, filter, doc, upsert } => {
-            cmd_replace_one(&client, &target, &filter, &doc, upsert).await
-        }
+        Cmd::UpdateOne {
+            target,
+            filter,
+            update,
+            upsert,
+        } => cmd_update(&client, &target, &filter, &update, false, upsert).await,
+        Cmd::UpdateMany {
+            target,
+            filter,
+            update,
+        } => cmd_update(&client, &target, &filter, &update, true, false).await,
+        Cmd::ReplaceOne {
+            target,
+            filter,
+            doc,
+            upsert,
+        } => cmd_replace_one(&client, &target, &filter, &doc, upsert).await,
         Cmd::DeleteOne { target, filter } => cmd_delete(&client, &target, &filter, false).await,
         Cmd::DeleteMany { target, filter } => cmd_delete(&client, &target, &filter, true).await,
         Cmd::Count { target, filter } => cmd_count(&client, &target, &filter).await,
         Cmd::Aggregate { target, pipeline } => cmd_aggregate(&client, &target, &pipeline).await,
         Cmd::ListDatabases => cmd_list_databases(&client).await,
         Cmd::ListCollections { db } => cmd_list_collections(&client, &db).await,
-        Cmd::CreateIndex { target, keys, unique, name } => {
-            cmd_create_index(&client, &target, &keys, unique, name.as_deref()).await
-        }
+        Cmd::CreateIndex {
+            target,
+            keys,
+            unique,
+            name,
+        } => cmd_create_index(&client, &target, &keys, unique, name.as_deref()).await,
         Cmd::DropIndex { target, name } => cmd_drop_index(&client, &target, &name).await,
         Cmd::Indexes { target } => cmd_list_indexes(&client, &target).await,
         Cmd::Ping => cmd_ping(&client).await,
@@ -335,11 +359,7 @@ async fn cmd_insert_many(client: &Client, target: &str) -> Result<()> {
         return emit_json(&serde_json::json!({ "inserted": 0, "ids": [] }));
     }
     let r = collection.insert_many(&docs).await.context("insert_many")?;
-    let ids: Vec<JsonValue> = r
-        .inserted_ids
-        .values()
-        .map(bson_to_json)
-        .collect();
+    let ids: Vec<JsonValue> = r.inserted_ids.values().map(bson_to_json).collect();
     emit_json(&serde_json::json!({
         "inserted": ids.len(),
         "ids": ids,
@@ -441,7 +461,10 @@ async fn cmd_aggregate(client: &Client, target: &str, pipeline: &str) -> Result<
             }
         })
         .collect::<Result<Vec<_>>>()?;
-    let mut cursor = collection.aggregate(stage_docs).await.context("aggregate")?;
+    let mut cursor = collection
+        .aggregate(stage_docs)
+        .await
+        .context("aggregate")?;
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     while let Some(d) = cursor.try_next().await.context("cursor")? {
@@ -451,10 +474,7 @@ async fn cmd_aggregate(client: &Client, target: &str, pipeline: &str) -> Result<
 }
 
 async fn cmd_list_databases(client: &Client) -> Result<()> {
-    let dbs = client
-        .list_databases()
-        .await
-        .context("list_databases")?;
+    let dbs = client.list_databases().await.context("list_databases")?;
     let stdout = io::stdout();
     let mut out = BufWriter::new(stdout.lock());
     for d in dbs {
@@ -499,7 +519,10 @@ async fn cmd_create_index(
         opts.name = Some(n.to_string());
     }
     let model = IndexModel::builder().keys(key_doc).options(opts).build();
-    let r = collection.create_index(model).await.context("create_index")?;
+    let r = collection
+        .create_index(model)
+        .await
+        .context("create_index")?;
     emit_json(&serde_json::json!({ "name": r.index_name }))
 }
 
@@ -784,13 +807,16 @@ mod tests {
     #[test]
     fn parse_doc_boolean_fields() {
         let d = parse_doc(r#"{"ok":true,"fail":false}"#).unwrap();
-        assert_eq!(d.get_bool("ok").unwrap(), true);
-        assert_eq!(d.get_bool("fail").unwrap(), false);
+        assert!(d.get_bool("ok").unwrap());
+        assert!(!d.get_bool("fail").unwrap());
     }
 
     #[test]
     fn bson_to_json_string_utf8() {
-        assert_eq!(bson_to_json(&Bson::String("hi".into())), serde_json::json!("hi"));
+        assert_eq!(
+            bson_to_json(&Bson::String("hi".into())),
+            serde_json::json!("hi")
+        );
     }
 
     #[test]
@@ -898,7 +924,10 @@ mod tests {
 
     #[test]
     fn bson_to_json_boolean_false() {
-        assert_eq!(bson_to_json(&Bson::Boolean(false)), serde_json::json!(false));
+        assert_eq!(
+            bson_to_json(&Bson::Boolean(false)),
+            serde_json::json!(false)
+        );
     }
 
     #[test]
@@ -947,7 +976,10 @@ mod tests {
 
     #[test]
     fn bson_to_json_string_empty() {
-        assert_eq!(bson_to_json(&Bson::String(String::new())), serde_json::json!(""));
+        assert_eq!(
+            bson_to_json(&Bson::String(String::new())),
+            serde_json::json!("")
+        );
     }
 
     #[test]
@@ -980,7 +1012,10 @@ mod tests {
 
     #[test]
     fn bson_to_json_document_empty() {
-        assert_eq!(bson_to_json(&Bson::Document(Document::new())), serde_json::json!({}));
+        assert_eq!(
+            bson_to_json(&Bson::Document(Document::new())),
+            serde_json::json!({})
+        );
     }
 
     #[test]
@@ -1028,7 +1063,10 @@ mod tests {
 
     #[test]
     fn bson_to_json_binary_empty() {
-        let b = Bson::Binary(bson::Binary { subtype: bson::spec::BinarySubtype::Generic, bytes: vec![] });
+        let b = Bson::Binary(bson::Binary {
+            subtype: bson::spec::BinarySubtype::Generic,
+            bytes: vec![],
+        });
         let j = bson_to_json(&b);
         assert!(j.get("$binary").is_some() || j.is_object());
     }
