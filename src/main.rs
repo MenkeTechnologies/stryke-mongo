@@ -1077,4 +1077,58 @@ mod tests {
         assert_eq!(db, "my_db");
         assert_eq!(c, "coll");
     }
+
+    // ─── parse_target / parse_doc error-shape pins ───────────────────
+    //
+    // CLI users grep mongosh-style errors for both the offending input
+    // and the expected grammar. Drift here silently changes script
+    // behavior that depends on those substrings.
+
+    #[test]
+    fn parse_target_error_mentions_expected_form() {
+        let err = parse_target("nothing").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("DB/COLLECTION"),
+            "error should template expected form; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_target_error_echoes_offending_input() {
+        let err = parse_target("totally bad").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("totally bad"),
+            "error should echo offending input; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_doc_rejects_array_with_object_hint() {
+        let err = parse_doc("[1, 2, 3]").unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("expected a JSON object"),
+            "error must hint at the missing object; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn parse_doc_rejects_scalar_with_object_hint() {
+        let err = parse_doc("42").unwrap_err();
+        assert!(format!("{err}").contains("expected a JSON object"));
+    }
+
+    #[test]
+    fn parse_doc_surfaces_parse_json_context() {
+        // anyhow chain must carry the `parsing JSON document` context
+        // so callers can pattern-match on it.
+        let err = parse_doc("not-json").unwrap_err();
+        let chain: Vec<_> = err.chain().map(|c| c.to_string()).collect();
+        assert!(
+            chain.iter().any(|s| s.contains("parsing JSON document")),
+            "expected `parsing JSON document` context in chain; got {chain:?}"
+        );
+    }
 }
