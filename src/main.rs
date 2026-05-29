@@ -1131,4 +1131,83 @@ mod tests {
             "expected `parsing JSON document` context in chain; got {chain:?}"
         );
     }
+
+    // ─── clap parsing — Cli top-level + Cmd routing ─────────────────────
+    // Pin the user-facing CLI contract: required positionals, filter
+    // default, upsert defaults. Drift in upsert/default-filter would
+    // silently change which documents are matched or created.
+
+    fn parse_cli(args: &[&str]) -> Result<Cli, clap::Error> {
+        let mut argv = vec!["stryke-mongo-helper"];
+        argv.extend_from_slice(args);
+        Cli::try_parse_from(argv)
+    }
+
+    #[test]
+    fn cli_list_databases_unit_variant() {
+        let cli = parse_cli(&["list-databases"]).expect("parse");
+        assert!(matches!(cli.cmd, Cmd::ListDatabases));
+        assert!(cli.conn.uri.is_none(), "no --uri = driver picks default");
+    }
+
+    #[test]
+    fn cli_find_requires_target_positional() {
+        let err = parse_cli(&["find"]).expect_err("missing target");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn cli_find_filter_default_is_empty_object() {
+        // Pin: bare `find db/coll` means filter={} → match everything.
+        // A drift here (e.g. requiring --filter) would break the most
+        // common one-liner usage.
+        let cli = parse_cli(&["find", "mydb/users"]).expect("parse");
+        match cli.cmd {
+            Cmd::Find { target, filter, .. } => {
+                assert_eq!(target, "mydb/users");
+                assert_eq!(filter, "{}");
+            }
+            _ => panic!("expected Find"),
+        }
+    }
+
+    #[test]
+    fn cli_update_one_upsert_defaults_false() {
+        // Pin: upsert must be opt-in. Default-true would silently create
+        // documents on every UpdateOne miss, masking app-level bugs.
+        let cli = parse_cli(&[
+            "update-one",
+            "db/c",
+            "--filter",
+            "{}",
+            "--update",
+            "{\"$set\":{\"x\":1}}",
+        ])
+        .expect("parse");
+        match cli.cmd {
+            Cmd::UpdateOne { upsert, .. } => assert!(!upsert),
+            _ => panic!("expected UpdateOne"),
+        }
+    }
+
+    #[test]
+    fn cli_aggregate_requires_pipeline_flag() {
+        // Bare `aggregate db/c` without --pipeline is meaningless;
+        // the parser must catch it before the driver does.
+        let err = parse_cli(&["aggregate", "db/c"]).expect_err("missing --pipeline");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+    }
+
+    #[test]
+    fn cli_count_filter_default_is_empty_object() {
+        // Same convention as Find — bare `count db/c` counts everything.
+        let cli = parse_cli(&["count", "logs/events"]).expect("parse");
+        match cli.cmd {
+            Cmd::Count { target, filter, .. } => {
+                assert_eq!(target, "logs/events");
+                assert_eq!(filter, "{}");
+            }
+            _ => panic!("expected Count"),
+        }
+    }
 }
