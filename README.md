@@ -192,7 +192,7 @@ Mongo::ping              %opts → 1 | ""
 ```stryke
 Mongo::helper_path()    → $abs_path
 Mongo::ensure_built()   → $abs_path
-Mongo::version()        → "stryke-mongo-helper 0.1.0"
+Mongo::version()        → "stryke-mongo-helper 0.1.1"
 ```
 
 ## [0x04] BSON type encoding
