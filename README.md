@@ -192,7 +192,7 @@ Mongo::ping              %opts → 1 | ""
 ```stryke
 Mongo::helper_path()    → $abs_path
 Mongo::ensure_built()   → $abs_path
-Mongo::version()        → "stryke-mongo-helper 0.1.1"
+Mongo::version()        → "stryke-mongo-helper X.Y.Z"
 ```
 
 ## [0x04] BSON type encoding
@@ -242,7 +242,7 @@ Output:
 
 ```sh
 cargo test                            # compiles, no live calls
-MONGODB_URI=mongodb://localhost s test t/    # 9-test live round-trip
+MONGODB_URI=mongodb://localhost s test t/    # live round-trip
 ```
 
 Tests use a unique `stryke_test_$$` collection name and clean up.
@@ -271,20 +271,20 @@ stryke-mongo/
   stryke.toml                      # stryke package manifest
   Cargo.toml                       # Rust helper crate manifest
   Makefile
-  src/main.rs                      # single-file helper, ~500 LOC
+  src/main.rs                      # single-file helper
   lib/
     Mongo.stk                      # `use Mongo`
   bin/
     mongo.stk                      # `mongo` CLI
     mongo-build.stk
   t/
-    test_mongo.stk                 # 9-test live round-trip
+    test_mongo.stk                 # live round-trip
   examples/
     crud.stk
     aggregate.stk
     index_admin.stk
   .github/workflows/
-    ci.yml                         # mongo:7 service + 9-test round-trip
+    ci.yml                         # mongo:7 service + live round-trip
     release.yml                    # cross-compile + GH release on tag push
 ```
 
