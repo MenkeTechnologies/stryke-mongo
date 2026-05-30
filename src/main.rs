@@ -152,6 +152,17 @@ async fn main() {
 
 async fn run(cli: Cli) -> Result<()> {
     let client = make_client(&cli.conn).await?;
+    let result = run_with_client(cli, client.clone()).await;
+    // Drain the connection pool before the tokio runtime starts dropping.
+    // The mongodb 3.7 driver spawns background tasks on the runtime; if main
+    // returns while those tasks are mid-send, channel close triggers an
+    // unwrap-on-SendError panic in connection_requester.rs:42. shutdown()
+    // blocks until pool tasks complete and the channel drains cleanly.
+    client.shutdown().await;
+    result
+}
+
+async fn run_with_client(cli: Cli, client: Client) -> Result<()> {
     match cli.cmd {
         Cmd::Find {
             target,
