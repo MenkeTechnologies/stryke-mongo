@@ -6,6 +6,7 @@ description = "MongoDB bridge binary for the stryke `mongo` package."
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-mongo"
+homepage = "https://menketechnologies.github.io/stryke-mongo/"
 publish = false
 
 [[bin]]
