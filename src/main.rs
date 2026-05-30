@@ -1210,4 +1210,145 @@ mod tests {
             _ => panic!("expected Count"),
         }
     }
+
+    // ─── clap parsing — additional Cmd surfaces (round 2) ──────────────
+    // Previous round pinned find/find-filter/update-upsert/aggregate/count.
+    // These pin: FindOne mirrors Find's empty-filter default; InsertOne /
+    // DeleteOne / DeleteMany / ReplaceOne required flags; CreateIndex
+    // --keys required and --unique opt-in (no silent uniqueness drift);
+    // DropIndex two-positional contract; Ping/Indexes/ListCollections
+    // routing including required positionals.
+
+    #[test]
+    fn cli_find_one_filter_default_and_projection_optional() {
+        // Pin: FindOne's --filter default is `{}` (mirrors Find — same
+        // one-liner convention); --projection default None.
+        let cli = parse_cli(&["find-one", "db/c"]).expect("parse");
+        match cli.cmd {
+            Cmd::FindOne {
+                target,
+                filter,
+                projection,
+            } => {
+                assert_eq!(target, "db/c");
+                assert_eq!(filter, "{}");
+                assert!(projection.is_none());
+            }
+            _ => panic!("expected FindOne"),
+        }
+    }
+
+    #[test]
+    fn cli_insert_one_and_delete_required_flags() {
+        // Pin: InsertOne requires --doc; DeleteOne/DeleteMany require
+        // --filter (no implicit delete-everything safety net).
+        use clap::error::ErrorKind::MissingRequiredArgument;
+        assert_eq!(
+            parse_cli(&["insert-one", "db/c"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_cli(&["delete-one", "db/c"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_cli(&["delete-many", "db/c"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        // Drift to defaulting --filter='{}' on Delete would silently nuke
+        // collections — the absence of a default is the safety.
+    }
+
+    #[test]
+    fn cli_replace_one_upsert_default_false_and_doc_required() {
+        // ReplaceOne mirrors UpdateOne's upsert default-false safety.
+        use clap::error::ErrorKind::MissingRequiredArgument;
+        assert_eq!(
+            parse_cli(&["replace-one", "db/c"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        let cli = parse_cli(&[
+            "replace-one",
+            "db/c",
+            "--filter",
+            "{}",
+            "--doc",
+            r#"{"x":1}"#,
+        ])
+        .expect("parse");
+        match cli.cmd {
+            Cmd::ReplaceOne {
+                target,
+                filter,
+                doc,
+                upsert,
+            } => {
+                assert_eq!(target, "db/c");
+                assert_eq!(filter, "{}");
+                assert_eq!(doc, r#"{"x":1}"#);
+                assert!(!upsert);
+            }
+            _ => panic!("expected ReplaceOne"),
+        }
+    }
+
+    #[test]
+    fn cli_create_index_keys_required_unique_default_false() {
+        // Pin: --keys is the index spec; without it the call is meaningless.
+        // --unique defaults false; default-true would silently fail inserts
+        // on duplicate keys for existing indexes.
+        use clap::error::ErrorKind::MissingRequiredArgument;
+        assert_eq!(
+            parse_cli(&["create-index", "db/c"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        let cli = parse_cli(&["create-index", "db/c", "--keys", r#"{"name":1}"#]).expect("parse");
+        match cli.cmd {
+            Cmd::CreateIndex {
+                target,
+                keys,
+                unique,
+                name,
+            } => {
+                assert_eq!(target, "db/c");
+                assert_eq!(keys, r#"{"name":1}"#);
+                assert!(!unique);
+                assert!(name.is_none());
+            }
+            _ => panic!("expected CreateIndex"),
+        }
+    }
+
+    #[test]
+    fn cli_drop_index_two_positionals_and_ping_indexes_listcollections_routing() {
+        // Pin: DropIndex requires both target AND name. Ping is a unit
+        // variant; Indexes/ListCollections each require one positional.
+        use clap::error::ErrorKind::MissingRequiredArgument;
+        assert_eq!(
+            parse_cli(&["drop-index"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_cli(&["drop-index", "db/c"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        let cli = parse_cli(&["drop-index", "db/c", "idx_name_1"]).expect("parse");
+        match cli.cmd {
+            Cmd::DropIndex { target, name } => {
+                assert_eq!(target, "db/c");
+                assert_eq!(name, "idx_name_1");
+            }
+            _ => panic!("expected DropIndex"),
+        }
+
+        assert!(matches!(parse_cli(&["ping"]).unwrap().cmd, Cmd::Ping));
+        assert_eq!(
+            parse_cli(&["indexes"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+        assert_eq!(
+            parse_cli(&["list-collections"]).unwrap_err().kind(),
+            MissingRequiredArgument
+        );
+    }
 }
