@@ -4,9 +4,9 @@
 
 use Mongo
 
-my $t = "demo/users"
+val $t = "demo/users"
 
-my $r = Mongo::insert_one $t, { name => "alice", age => 30, tags => ["admin","analyst"] }
+val $r = Mongo::insert_one $t, { name => "alice", age => 30, tags => ["admin","analyst"] }
 p "inserted: " . to_json($r->{inserted_id})
 
 Mongo::insert_many $t, [
@@ -17,9 +17,9 @@ Mongo::insert_many $t, [
 
 p "count: " . Mongo::count($t)
 
-my @over28 = Mongo::find $t, filter => { age => { '$gt' => 28 } }, sort => { age => -1 }
+val @over28 = Mongo::find $t, filter => { age => { '$gt' => 28 } }, sort => { age => -1 }
 p "over-28:"
-for my $u (@over28) {
+for val $u (@over28) {
     p "  $u->{name} (age $u->{age})"
 }
 

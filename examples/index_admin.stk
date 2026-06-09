@@ -4,20 +4,20 @@
 
 use Mongo
 
-my $t = "demo/users"
+val $t = "demo/users"
 
 Mongo::create_index $t, { name => 1 }, unique => 1
 Mongo::create_index $t, { age => -1 }
 Mongo::create_index $t, { email => 1 }, unique => 1, name => "uniq_email"
 
 p "indexes:"
-for my $idx (Mongo::indexes($t)) {
+for val $idx (Mongo::indexes($t)) {
     p sprintf("  %-20s keys=%s unique=%s",
               $idx->{name}, to_json($idx->{keys}), $idx->{unique} ? "yes" : "no")
 }
 
 Mongo::drop_index $t, "uniq_email"
 p "after drop:"
-for my $idx (Mongo::indexes($t)) {
+for val $idx (Mongo::indexes($t)) {
     p "  $idx->{name}"
 }

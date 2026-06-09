@@ -4,7 +4,7 @@
 
 use Mongo
 
-my $t = "demo/orders"
+val $t = "demo/orders"
 
 # Seed a few docs.
 Mongo::insert_many $t, [
@@ -16,7 +16,7 @@ Mongo::insert_many $t, [
 ]
 
 # Group by customer, sum totals, sort descending.
-my @top = Mongo::aggregate $t, [
+val @top = Mongo::aggregate $t, [
     { '$group' => { _id => '$customer',
                     total => { '$sum' => '$total' },
                     items => { '$sum' => '$qty' } } },
@@ -24,7 +24,7 @@ my @top = Mongo::aggregate $t, [
 ]
 
 p "customer revenue:"
-for my $r (@top) {
+for val $r (@top) {
     p sprintf("  %-10s \$%d (%d items)", $r->{_id}, $r->{total}, $r->{items})
 }
 
