@@ -42,6 +42,14 @@ tier.
 
 ## [0x00] Install
 
+From a release (no rustc on the consumer machine):
+
+```sh
+s pkg install -g github.com/MenkeTechnologies/stryke-mongo
+```
+
+From a local checkout:
+
 ```sh
 cd ~/projects/stryke-mongo
 cargo build --release
@@ -53,6 +61,10 @@ Or:
 ```sh
 make install
 ```
+
+The cdylib is dlopened in-process on first `use Mongo`. A shared tokio
+runtime + `mongodb::Client` cache keyed by connection URI is held in
+`OnceCell` — no fork-per-call, no fresh TCP+TLS+auth handshake.
 
 ## [0x01] Quick start
 

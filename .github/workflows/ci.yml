@@ -63,47 +63,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --no-fail-fast
 
-  helper-live-mongo:
-    name: Helper end-to-end (mongo:7)
-    runs-on: ubuntu-latest
-    services:
-      mongo:
-        image: mongo:7
-        ports:
-          - 27017:27017
-        options: >-
-          --health-cmd="mongosh --quiet --eval 'db.runCommand({ping:1}).ok' | grep -x 1"
-          --health-interval=5s
-          --health-timeout=3s
-          --health-retries=20
-    env:
-      MONGODB_URI: mongodb://127.0.0.1:27017
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-
-      - run: cargo build --release --locked
-
-      - name: ping + CRUD + aggregate + index
-        run: |
-          set -euo pipefail
-          H=./target/release/stryke-mongo-helper
-          $H ping | jq -e '.ok == 1'
-          $H insert-one ci/users --doc='{"name":"alice","age":30,"role":"admin"}' | jq -e '.inserted_id'
-          printf '{"name":"bob","age":25}\n{"name":"charlie","age":35}\n{"name":"dana","age":28}\n' \
-            | $H insert-many ci/users | jq -e '.inserted == 3'
-          $H count ci/users | jq -e '.count == 4'
-          $H find ci/users --sort='{"age":1}' --limit=1 | jq -e '.name == "bob"'
-          $H find-one ci/users --filter='{"name":"alice"}' | jq -e '.role == "admin"'
-          $H update-one ci/users --filter='{"name":"alice"}' --update='{"$set":{"role":"superadmin"}}' \
-            | jq -e '.matched == 1 and .modified == 1'
-          $H aggregate ci/users --pipeline='[{"$group":{"_id":null,"n":{"$sum":1}}}]' | jq -e '.n == 4'
-          $H create-index ci/users --keys='{"name":1}' --unique | jq -e '.name == "name_1"'
-          $H indexes ci/users | grep -q name_1
-          $H delete-many ci/users --filter='{}' | jq -e '.deleted == 4'
-          $H list-databases | grep -q ci
-
   doc:
     name: Doc
     runs-on: ubuntu-latest
@@ -117,7 +76,7 @@ jobs:
 
   release-build:
     name: Release Build (${{ matrix.target }})
-    needs: [check, test, helper-live-mongo]
+    needs: [check, test]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -139,7 +98,7 @@ jobs:
       - uses: actions/upload-artifact@v6
         with:
           name: stryke-mongo-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/stryke-mongo-helper
+          path: target/${{ matrix.target }}/release/libstryke_mongo.*
 
   docs-gates:
     name: Docs gates

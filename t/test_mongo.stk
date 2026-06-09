@@ -1,21 +1,22 @@
 # t/test_mongo.stk — round-trip against a live MongoDB.
 #
-# Skips when the helper isn't built or no mongo is reachable. Local dev:
-#   mongod --dbpath /tmp/mdb --port 27017
+# Requires the cdylib to be loaded. Install once with `s pkg install -g .`
+# from the package root so stryke's FFI bridge dlopens
+# lib/libstryke_mongo.{dylib,so} on `use Mongo`.
 #
 # Uses a unique collection `stryke_test_$$` and cleans up at exit.
 
-require "./lib/Mongo.stk"
+use Mongo
 
-my $have_helper = eval { Mongo::helper_path(); 1 }
-unless ($have_helper) {
-    p "1..0 # SKIP helper not built — run `cargo build --release` first"
+my $have_cdylib = eval { Mongo::version(); 1 }
+unless ($have_cdylib) {
+    p "1..0 # SKIP cdylib not loaded — run `s pkg install -g .` first"
     exit 0
 }
 
 my %conn
 $conn{uri} = $ENV{MONGODB_URI} if defined $ENV{MONGODB_URI}
-unless (Mongo::ping(%conn)) {
+unless (eval { Mongo::ping(%conn) }) {
     p "1..0 # SKIP MongoDB unreachable"
     exit 0
 }

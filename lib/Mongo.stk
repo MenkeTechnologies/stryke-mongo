@@ -1,309 +1,162 @@
-# lib/Mongo.stk — MongoDB client for stryke.
+# lib/Mongo.stk — MongoDB client for stryke (`use Mongo`).
 #
-# Wraps the `stryke-mongo-helper` Rust binary (mongodb 3.x driver, async
-# tokio). Output is NDJSON for cursors (find / aggregate / list-*) and
-# single JSON otherwise. BSON round-trips through MongoDB extended JSON,
-# so ObjectId, dates, and NumberLong all survive intact:
-#   { "_id": { "$oid": "65f9..." }, "ts": { "$date": "2026-05-17T…Z" } }
+# Thin wrapper around the `stryke-mongo` cdylib's `mongo__*` exports.
+# The cdylib is dlopened in-process on first `use Mongo` (see stryke's
+# `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
+# stryke-callable function via `rust_ffi::load_cdylib`.
 #
-# Targets use `DB/COLLECTION` form. URI: --uri (or $MONGODB_URI).
+# Replaces the v1 helper-binary model (fork(2) + exec(2) + fresh TCP+TLS+
+# auth handshake per call). The cdylib holds one shared tokio runtime +
+# a mongodb::Client cache keyed by connection URI. Back-to-back calls
+# reuse the same client + underlying connection pool.
 
 package Mongo
 
-our $HELPER
+# ── error dispatch ────────────────────────────────────────────────────
 
-fn Mongo::pkg_root {
-    my @parts = split "/", __FILE__
-    pop @parts
-    pop @parts
-    my $root = join "/", @parts
-    $root ne "" ? $root : "."
-}
-
-fn Mongo::helper_path {
-    return $Mongo::HELPER if defined $Mongo::HELPER && -x $Mongo::HELPER
-
-    if (exists $ENV{STRYKE_MONGO_HELPER} && $ENV{STRYKE_MONGO_HELPER} ne "") {
-        my $p = $ENV{STRYKE_MONGO_HELPER}
-        die "stryke-mongo: STRYKE_MONGO_HELPER=$p is not an executable file" unless -x $p
-        $Mongo::HELPER = $p
-        return $p
+fn Mongo::_decode ($name, $json) {
+    my $o = from_json $json
+    if (ref $o eq "HASH" && exists $o->{error}) {
+        die "Mongo::$name: $o->{error}"
     }
-
-    my $root = Mongo::pkg_root()
-    for my $cand (
-        "$root/target/release/stryke-mongo-helper",
-        "$root/target/debug/stryke-mongo-helper",
-        "$root/bin/stryke-mongo-helper",
-    ) {
-        if (-x $cand) {
-            $Mongo::HELPER = $cand
-            return $cand
-        }
-    }
-
-    my $which = qx{command -v stryke-mongo-helper 2>/dev/null}
-    chomp $which
-    if ($which ne "" && -x $which) {
-        $Mongo::HELPER = $which
-        return $which
-    }
-
-    die "stryke-mongo: helper binary not found.\n" .
-        "  Build it once with:  cd $root && cargo build --release\n" .
-        "  Or set STRYKE_MONGO_HELPER=/path/to/stryke-mongo-helper\n"
+    $o
 }
 
-fn Mongo::ensure_built {
-    my $root = Mongo::pkg_root()
-    for my $cand ("$root/target/release/stryke-mongo-helper",
-                  "$root/target/debug/stryke-mongo-helper") {
-        return $cand if -x $cand
-    }
-    return Mongo::helper_path() if exists $ENV{STRYKE_MONGO_HELPER}
-
-    p "stryke-mongo: building helper (cargo build --release)..."
-    my $rc = system "cd " . Mongo::_shq($root) . " && cargo build --release"
-    die "stryke-mongo: cargo build failed (rc=$rc)" if $rc != 0
-    Mongo::helper_path()
+fn Mongo::_req ($extra, $opts) {
+    my %r = %$extra
+    $r{uri} = $opts->{uri} if exists $opts->{uri} && defined $opts->{uri}
+    \%r
 }
 
-fn Mongo::_shq ($s) {
-    my $t = $s
-    $t =~ s/'/'\\''/g
-    "'$t'"
-}
-
-fn Mongo::_conn_argv ($o) {
-    my @argv = (Mongo::_shq(Mongo::helper_path()))
-    push @argv, "--uri", Mongo::_shq($o->{uri}) if defined $o->{uri}
-    @argv
-}
-
-fn Mongo::_drain_ndjson ($fh) {
-    my @rows
-    while (my $line = <$fh>) {
-        chomp $line
-        next if $line eq ""
-        push @rows, from_json $line
-    }
-    @rows
-}
-
-fn Mongo::_run_ndjson ($argv) {
-    my $cmd = join " ", @$argv
-    if ($ENV{STRYKE_MONGO_DEBUG}) {
-        warn "DEBUG mongo cmd: $cmd\n"
-    }
-    open my $fh, "-|", $cmd or die "stryke-mongo: spawn failed: $!"
-    my @rows = Mongo::_drain_ndjson $fh
-    close $fh or die "stryke-mongo: helper exited ($?)"
-    @rows
-}
-
-fn Mongo::_run_json ($argv) {
-    my $cmd = join " ", @$argv
-    if ($ENV{STRYKE_MONGO_DEBUG}) {
-        warn "DEBUG mongo cmd: $cmd\n"
-    }
-    my $out = qx{$cmd}
-    die "stryke-mongo: helper exited ($?)" if $? != 0
-    from_json $out
-}
+# ── version + ping ──────────────────────────────────────────────────
 
 fn Mongo::version {
-    my $bin = Mongo::_shq(Mongo::helper_path())
-    my $v = qx{$bin --version 2>&1}
-    chomp $v
-    $v
+    Mongo::_decode("pkg_version", mongo__pkg_version("{}"))->{version}
 }
 
 fn Mongo::ping (%opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "ping"
-    my $cmd = join " ", @argv
-    my $out = qx{$cmd 2>/dev/null}
-    $? == 0 && $out =~ /"ok":\s*1/
+    my $r = Mongo::_req({ db => $opts{db} }, \%opts)
+    Mongo::_decode("ping", mongo__ping(to_json($r)))->{ok} ? 1 : 0
 }
 
-# ---------------------------------------------------------------------------
-# Read paths
-# ---------------------------------------------------------------------------
-
-# Find docs. %opts:
-#   filter / projection / sort  → hashref or arrayref (we to_json them)
-#   limit / skip
-fn Mongo::find ($target, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "find", Mongo::_shq($target)
-    push @argv, "--filter", Mongo::_shq(to_json($opts{filter} // {}))
-    push @argv, "--projection", Mongo::_shq(to_json $opts{projection}) if defined $opts{projection}
-    push @argv, "--sort",       Mongo::_shq(to_json $opts{sort})       if defined $opts{sort}
-    push @argv, "--limit",      Mongo::_shq($opts{limit})              if defined $opts{limit}
-    push @argv, "--skip",       Mongo::_shq($opts{skip})               if defined $opts{skip}
-    Mongo::_run_ndjson(\@argv)
-}
-
-fn Mongo::find_one ($target, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "find-one", Mongo::_shq($target)
-    push @argv, "--filter", Mongo::_shq(to_json($opts{filter} // {}))
-    push @argv, "--projection", Mongo::_shq(to_json $opts{projection}) if defined $opts{projection}
-    my $r = Mongo::_run_json(\@argv)
-    defined $r && ref($r) eq "HASH" ? $r : undef
-}
-
-fn Mongo::count ($target, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "count", Mongo::_shq($target)
-    push @argv, "--filter", Mongo::_shq(to_json($opts{filter} // {}))
-    Mongo::_run_json(\@argv)->{count}
-}
-
-# $pipeline: arrayref of stage hashrefs.
-fn Mongo::aggregate ($target, $pipeline, %opts) {
-    die "Mongo::aggregate: pipeline must be an arrayref" unless ref($pipeline) eq "ARRAY"
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "aggregate", Mongo::_shq($target), "--pipeline", Mongo::_shq(to_json $pipeline)
-    Mongo::_run_ndjson(\@argv)
-}
-
-# Streaming find/aggregate. callback => sub ($doc) { … }. Returns count.
-fn Mongo::find_stream ($target, %opts) {
-    die "Mongo::find_stream: callback => sub { … } required" unless defined $opts{callback}
-    my $cb = $opts{callback}
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "find", Mongo::_shq($target), "--filter", Mongo::_shq(to_json($opts{filter} // {}))
-    push @argv, "--projection", Mongo::_shq(to_json $opts{projection}) if defined $opts{projection}
-    push @argv, "--sort",       Mongo::_shq(to_json $opts{sort})       if defined $opts{sort}
-    push @argv, "--limit",      Mongo::_shq($opts{limit})              if defined $opts{limit}
-    push @argv, "--skip",       Mongo::_shq($opts{skip})               if defined $opts{skip}
-    my $cmd = join " ", @argv
-    my $n = 0
-    open my $fh, "-|", $cmd or die "Mongo::find_stream: spawn failed: $!"
-    while (my $line = <$fh>) {
-        chomp $line
-        next if $line eq ""
-        $cb->(from_json $line)
-        $n++
-    }
-    close $fh or die "Mongo::find_stream: helper exited ($?)"
-    $n
-}
-
-# ---------------------------------------------------------------------------
-# Write paths
-# ---------------------------------------------------------------------------
-
-fn Mongo::insert_one ($target, $doc, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "insert-one", Mongo::_shq($target), "--doc", Mongo::_shq(to_json $doc)
-    Mongo::_run_json(\@argv)
-}
-
-# $docs: arrayref of hashrefs.
-fn Mongo::insert_many ($target, $docs, %opts) {
-    die "Mongo::insert_many: docs must be an arrayref" unless ref($docs) eq "ARRAY"
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "insert-many", Mongo::_shq($target)
-
-    my $tmp = "/tmp/stryke-mongo-bulk-$$-" . time()
-    my $cmd = join(" ", @argv) . " > " . Mongo::_shq($tmp)
-    open my $fh, "|-", $cmd or die "Mongo::insert_many: spawn failed: $!"
-    for my $d (@$docs) {
-        print $fh to_json($d) . "\n"
-    }
-    close $fh or do {
-        unlink $tmp
-        die "Mongo::insert_many: helper exited ($?)"
-    }
-    my $raw = ""
-    if (open my $rf, "<", $tmp) {
-        local $/
-        $raw = <$rf>
-        close $rf
-    }
-    unlink $tmp
-    from_json $raw
-}
-
-# $filter hashref, $update hashref ({$set:…} etc).
-fn Mongo::update_one ($target, $filter, $update, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "update-one", Mongo::_shq($target),
-                 "--filter", Mongo::_shq(to_json $filter),
-                 "--update", Mongo::_shq(to_json $update)
-    push @argv, "--upsert" if $opts{upsert}
-    Mongo::_run_json(\@argv)
-}
-
-fn Mongo::update_many ($target, $filter, $update, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "update-many", Mongo::_shq($target),
-                 "--filter", Mongo::_shq(to_json $filter),
-                 "--update", Mongo::_shq(to_json $update)
-    Mongo::_run_json(\@argv)
-}
-
-# Replace-one — `$doc` replaces the whole document (no $set).
-fn Mongo::replace_one ($target, $filter, $doc, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "replace-one", Mongo::_shq($target),
-                 "--filter", Mongo::_shq(to_json $filter),
-                 "--doc",    Mongo::_shq(to_json $doc)
-    push @argv, "--upsert" if $opts{upsert}
-    Mongo::_run_json(\@argv)
-}
-
-fn Mongo::delete_one ($target, $filter, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "delete-one", Mongo::_shq($target),
-                 "--filter", Mongo::_shq(to_json $filter)
-    Mongo::_run_json(\@argv)
-}
-
-fn Mongo::delete_many ($target, $filter, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "delete-many", Mongo::_shq($target),
-                 "--filter", Mongo::_shq(to_json $filter)
-    Mongo::_run_json(\@argv)
-}
-
-# ---------------------------------------------------------------------------
-# Metadata + admin
-# ---------------------------------------------------------------------------
+# ── DB / collection listing ─────────────────────────────────────────
 
 fn Mongo::list_databases (%opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "list-databases"
-    Mongo::_run_ndjson(\@argv)
+    my $o = Mongo::_decode("list_databases",
+        mongo__list_databases(to_json(Mongo::_req({}, \%opts))))
+    @{ $o->{databases} }
 }
 
 fn Mongo::list_collections ($db, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "list-collections", Mongo::_shq($db)
-    map { $_->{name} } Mongo::_run_ndjson(\@argv)
+    my $o = Mongo::_decode("list_collections",
+        mongo__list_collections(to_json(Mongo::_req({ db => $db }, \%opts))))
+    @{ $o->{collections} }
 }
 
-# $keys hashref like `{ field => 1, other => -1 }`.
+# ── read paths ──────────────────────────────────────────────────────
+
+fn Mongo::find ($target, %opts) {
+    my $r = Mongo::_req(
+        { target => $target, filter => $opts{filter}, sort => $opts{sort},
+          projection => $opts{projection}, limit => $opts{limit}, skip => $opts{skip} },
+        \%opts
+    )
+    my $o = Mongo::_decode("find", mongo__find(to_json($r)))
+    @{ $o->{docs} }
+}
+
+fn Mongo::find_one ($target, %opts) {
+    my $r = Mongo::_req(
+        { target => $target, filter => $opts{filter}, projection => $opts{projection} },
+        \%opts
+    )
+    Mongo::_decode("find_one", mongo__find_one(to_json($r)))->{doc}
+}
+
+fn Mongo::count ($target, %opts) {
+    my $r = Mongo::_req({ target => $target, filter => $opts{filter} }, \%opts)
+    Mongo::_decode("count", mongo__count(to_json($r)))->{value}
+}
+
+fn Mongo::aggregate ($target, $pipeline, %opts) {
+    die "Mongo::aggregate: pipeline must be arrayref" unless ref($pipeline) eq "ARRAY"
+    my $r = Mongo::_req({ target => $target, pipeline => $pipeline }, \%opts)
+    my $o = Mongo::_decode("aggregate", mongo__aggregate(to_json($r)))
+    @{ $o->{docs} }
+}
+
+# Streaming find (cursor-style) — the v1 helper streamed NDJSON over a
+# pipe. The cdylib materializes all rows in one call; pipe-flush latency
+# is gone, so buffered callback iteration is equivalent in throughput.
+fn Mongo::find_stream ($target, %opts) {
+    die "Mongo::find_stream: callback => sub { … } required" unless defined $opts{callback}
+    my $cb = $opts{callback}
+    my @docs = Mongo::find($target, %opts)
+    my $n = 0
+    for my $doc (@docs) {
+        $cb->($doc)
+        $n++
+    }
+    $n
+}
+
+# ── write paths ─────────────────────────────────────────────────────
+
+fn Mongo::insert_one ($target, $doc, %opts) {
+    my $r = Mongo::_req({ target => $target, doc => $doc }, \%opts)
+    Mongo::_decode("insert_one", mongo__insert_one(to_json($r)))
+}
+
+fn Mongo::insert_many ($target, $docs, %opts) {
+    die "Mongo::insert_many: docs must be arrayref" unless ref($docs) eq "ARRAY"
+    my $r = Mongo::_req({ target => $target, docs => $docs }, \%opts)
+    Mongo::_decode("insert_many", mongo__insert_many(to_json($r)))->{inserted_count}
+}
+
+fn Mongo::update_one ($target, $filter, $update, %opts) {
+    my $r = Mongo::_req(
+        { target => $target, filter => $filter, update => $update }, \%opts)
+    Mongo::_decode("update_one", mongo__update_one(to_json($r)))
+}
+
+fn Mongo::update_many ($target, $filter, $update, %opts) {
+    my $r = Mongo::_req(
+        { target => $target, filter => $filter, update => $update }, \%opts)
+    Mongo::_decode("update_many", mongo__update_many(to_json($r)))
+}
+
+fn Mongo::replace_one ($target, $filter, $doc, %opts) {
+    my $r = Mongo::_req(
+        { target => $target, filter => $filter, doc => $doc }, \%opts)
+    Mongo::_decode("replace_one", mongo__replace_one(to_json($r)))
+}
+
+fn Mongo::delete_one ($target, $filter, %opts) {
+    my $r = Mongo::_req({ target => $target, filter => $filter }, \%opts)
+    Mongo::_decode("delete_one", mongo__delete_one(to_json($r)))->{deleted_count}
+}
+
+fn Mongo::delete_many ($target, $filter, %opts) {
+    my $r = Mongo::_req({ target => $target, filter => $filter }, \%opts)
+    Mongo::_decode("delete_many", mongo__delete_many(to_json($r)))->{deleted_count}
+}
+
+# ── index admin ─────────────────────────────────────────────────────
+
 fn Mongo::create_index ($target, $keys, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "create-index", Mongo::_shq($target), "--keys", Mongo::_shq(to_json $keys)
-    push @argv, "--unique" if $opts{unique}
-    push @argv, "--name", Mongo::_shq($opts{name}) if defined $opts{name}
-    Mongo::_run_json(\@argv)
+    my $r = Mongo::_req({ target => $target, keys => $keys }, \%opts)
+    Mongo::_decode("create_index", mongo__create_index(to_json($r)))->{name}
 }
 
 fn Mongo::drop_index ($target, $name, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "drop-index", Mongo::_shq($target), Mongo::_shq($name)
-    Mongo::_run_json(\@argv)
+    my $r = Mongo::_req({ target => $target, name => $name }, \%opts)
+    Mongo::_decode("drop_index", mongo__drop_index(to_json($r)))->{ok} ? 1 : 0
 }
 
 fn Mongo::indexes ($target, %opts) {
-    my @argv = Mongo::_conn_argv(\%opts)
-    push @argv, "indexes", Mongo::_shq($target)
-    Mongo::_run_ndjson(\@argv)
+    my $r = Mongo::_req({ target => $target }, \%opts)
+    my $o = Mongo::_decode("indexes", mongo__indexes(to_json($r)))
+    @{ $o->{indexes} }
 }
 
 1

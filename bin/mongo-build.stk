@@ -1,8 +1,0 @@
-#!/usr/bin/env stryke
-my @_p = split "/", __FILE__
-pop @_p
-pop @_p
-require join("/", @_p) . "/lib/Mongo.stk"
-
-my $path = Mongo::ensure_built()
-p "stryke-mongo: helper ready at $path"

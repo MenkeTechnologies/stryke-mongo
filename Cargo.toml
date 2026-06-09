@@ -1,17 +1,18 @@
 [package]
-name = "stryke-mongo-helper"
-version = "0.1.1"
+name = "stryke-mongo"
+version = "0.2.0"
 edition = "2021"
-description = "MongoDB bridge binary for the stryke `mongo` package"
+description = "MongoDB cdylib for the stryke `mongo` package — dlopened in-process via stryke's FFI bridge, with a persistent tokio runtime + mongodb::Client cache per connection URI."
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-mongo"
 homepage = "https://menketechnologies.github.io/stryke-mongo/"
 publish = false
 
-[[bin]]
-name = "stryke-mongo-helper"
-path = "src/main.rs"
+[lib]
+name = "stryke_mongo"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
 
 [dependencies]
 mongodb = { version = "3", default-features = false, features = [
@@ -20,12 +21,11 @@ mongodb = { version = "3", default-features = false, features = [
 bson = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "io-util"] }
 futures-util = "0.3"
-clap = { version = "4", default-features = false, features = [
-    "std", "derive", "help", "usage", "error-context", "env",
-] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"
+once_cell = "1"
+parking_lot = "0.12"
 
 [profile.release]
 opt-level = 3

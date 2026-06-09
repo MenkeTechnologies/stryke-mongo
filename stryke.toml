@@ -1,15 +1,35 @@
 [package]
 name = "mongo"
-version = "0.1.0"
-description = "MongoDB client for stryke. Find / insert / update / delete / aggregate / index admin against any mongo 5.0+ replica set or standalone."
+version = "0.2.0"
+description = "MongoDB client for stryke. Find / insert / update / delete / aggregate / index admin against mongo 5.0+. cdylib loaded in-process — persistent mongodb::Client cache across calls."
 authors = ["MenkeTechnologies"]
 license = "MIT"
 repository = "https://github.com/MenkeTechnologies/stryke-mongo"
 edition = "2026"
 
-[bin]
-mongo = "bin/mongo.stk"
-mongo-build = "bin/mongo-build.stk"
+[ffi]
+lib-name = "stryke_mongo"
+namespace = "Mongo"
+exports = [
+    "mongo__pkg_version",
+    "mongo__ping",
+    "mongo__list_databases",
+    "mongo__list_collections",
+    "mongo__find",
+    "mongo__find_one",
+    "mongo__count",
+    "mongo__aggregate",
+    "mongo__insert_one",
+    "mongo__insert_many",
+    "mongo__update_one",
+    "mongo__update_many",
+    "mongo__replace_one",
+    "mongo__delete_one",
+    "mongo__delete_many",
+    "mongo__create_index",
+    "mongo__drop_index",
+    "mongo__indexes",
+]
 
 [scripts]
 build = "cargo build --release"
