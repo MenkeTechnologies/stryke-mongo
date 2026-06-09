@@ -14,6 +14,7 @@ package Mongo
 
 # ── error dispatch ────────────────────────────────────────────────────
 
+## Decode the cdylib's JSON return; die on `{error}` payload.
 fn Mongo::_decode ($name, $json) {
     my $o = from_json $json
     if (ref $o eq "HASH" && exists $o->{error}) {
@@ -22,6 +23,7 @@ fn Mongo::_decode ($name, $json) {
     $o
 }
 
+## Build the FFI request hash by merging the caller's connection opts.
 fn Mongo::_req ($extra, $opts) {
     my %r = %$extra
     $r{uri} = $opts->{uri} if exists $opts->{uri} && defined $opts->{uri}
@@ -30,10 +32,12 @@ fn Mongo::_req ($extra, $opts) {
 
 # ── version + ping ──────────────────────────────────────────────────
 
+## Return the package version string.
 fn Mongo::version {
     Mongo::_decode("pkg_version", mongo__pkg_version("{}"))->{version}
 }
 
+## Connectivity probe — returns 1 on success, 0 on failure.
 fn Mongo::ping (%opts) {
     my $r = Mongo::_req({ db => $opts{db} }, \%opts)
     Mongo::_decode("ping", mongo__ping(to_json($r)))->{ok} ? 1 : 0
@@ -41,12 +45,14 @@ fn Mongo::ping (%opts) {
 
 # ── DB / collection listing ─────────────────────────────────────────
 
+## Array of database names.
 fn Mongo::list_databases (%opts) {
     my $o = Mongo::_decode("list_databases",
         mongo__list_databases(to_json(Mongo::_req({}, \%opts))))
     @{ $o->{databases} }
 }
 
+## Array of collection names in $db.
 fn Mongo::list_collections ($db, %opts) {
     my $o = Mongo::_decode("list_collections",
         mongo__list_collections(to_json(Mongo::_req({ db => $db }, \%opts))))
@@ -55,6 +61,7 @@ fn Mongo::list_collections ($db, %opts) {
 
 # ── read paths ──────────────────────────────────────────────────────
 
+## Find documents matching `filter`; returns array of doc hashrefs.
 fn Mongo::find ($target, %opts) {
     my $r = Mongo::_req(
         { target => $target, filter => $opts{filter}, sort => $opts{sort},
@@ -65,6 +72,7 @@ fn Mongo::find ($target, %opts) {
     @{ $o->{docs} }
 }
 
+## Find a single document or undef.
 fn Mongo::find_one ($target, %opts) {
     my $r = Mongo::_req(
         { target => $target, filter => $opts{filter}, projection => $opts{projection} },
@@ -73,11 +81,13 @@ fn Mongo::find_one ($target, %opts) {
     Mongo::_decode("find_one", mongo__find_one(to_json($r)))->{doc}
 }
 
+## Count documents matching `filter`.
 fn Mongo::count ($target, %opts) {
     my $r = Mongo::_req({ target => $target, filter => $opts{filter} }, \%opts)
     Mongo::_decode("count", mongo__count(to_json($r)))->{value}
 }
 
+## Run an aggregation pipeline; returns array of result docs.
 fn Mongo::aggregate ($target, $pipeline, %opts) {
     die "Mongo::aggregate: pipeline must be arrayref" unless ref($pipeline) eq "ARRAY"
     my $r = Mongo::_req({ target => $target, pipeline => $pipeline }, \%opts)
@@ -102,40 +112,47 @@ fn Mongo::find_stream ($target, %opts) {
 
 # ── write paths ─────────────────────────────────────────────────────
 
+## Insert one document; returns { inserted_id }.
 fn Mongo::insert_one ($target, $doc, %opts) {
     my $r = Mongo::_req({ target => $target, doc => $doc }, \%opts)
     Mongo::_decode("insert_one", mongo__insert_one(to_json($r)))
 }
 
+## Insert many documents; returns inserted count.
 fn Mongo::insert_many ($target, $docs, %opts) {
     die "Mongo::insert_many: docs must be arrayref" unless ref($docs) eq "ARRAY"
     my $r = Mongo::_req({ target => $target, docs => $docs }, \%opts)
     Mongo::_decode("insert_many", mongo__insert_many(to_json($r)))->{inserted_count}
 }
 
+## Update first matching doc; returns { matched_count, modified_count, upserted_id }.
 fn Mongo::update_one ($target, $filter, $update, %opts) {
     my $r = Mongo::_req(
         { target => $target, filter => $filter, update => $update }, \%opts)
     Mongo::_decode("update_one", mongo__update_one(to_json($r)))
 }
 
+## Update all matching docs; returns { matched_count, modified_count }.
 fn Mongo::update_many ($target, $filter, $update, %opts) {
     my $r = Mongo::_req(
         { target => $target, filter => $filter, update => $update }, \%opts)
     Mongo::_decode("update_many", mongo__update_many(to_json($r)))
 }
 
+## Replace first matching doc; returns { matched_count, modified_count }.
 fn Mongo::replace_one ($target, $filter, $doc, %opts) {
     my $r = Mongo::_req(
         { target => $target, filter => $filter, doc => $doc }, \%opts)
     Mongo::_decode("replace_one", mongo__replace_one(to_json($r)))
 }
 
+## Delete first matching doc; returns deleted_count.
 fn Mongo::delete_one ($target, $filter, %opts) {
     my $r = Mongo::_req({ target => $target, filter => $filter }, \%opts)
     Mongo::_decode("delete_one", mongo__delete_one(to_json($r)))->{deleted_count}
 }
 
+## Delete all matching docs; returns deleted_count.
 fn Mongo::delete_many ($target, $filter, %opts) {
     my $r = Mongo::_req({ target => $target, filter => $filter }, \%opts)
     Mongo::_decode("delete_many", mongo__delete_many(to_json($r)))->{deleted_count}
@@ -143,16 +160,19 @@ fn Mongo::delete_many ($target, $filter, %opts) {
 
 # ── index admin ─────────────────────────────────────────────────────
 
+## Create an index from a keys hashref; returns the new index name.
 fn Mongo::create_index ($target, $keys, %opts) {
     my $r = Mongo::_req({ target => $target, keys => $keys }, \%opts)
     Mongo::_decode("create_index", mongo__create_index(to_json($r)))->{name}
 }
 
+## Drop index by name; returns 1 on success.
 fn Mongo::drop_index ($target, $name, %opts) {
     my $r = Mongo::_req({ target => $target, name => $name }, \%opts)
     Mongo::_decode("drop_index", mongo__drop_index(to_json($r)))->{ok} ? 1 : 0
 }
 
+## Array of index spec hashrefs for the collection.
 fn Mongo::indexes ($target, %opts) {
     my $r = Mongo::_req({ target => $target }, \%opts)
     my $o = Mongo::_decode("indexes", mongo__indexes(to_json($r)))
