@@ -1,14 +1,14 @@
-# lib/Mongo.stk — MongoDB client for stryke (`use Mongo`).
-#
-# Thin wrapper around the `stryke-mongo` cdylib's `mongo__*` exports.
-# The cdylib is dlopened in-process on first `use Mongo` (see stryke's
-# `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
-# stryke-callable function via `rust_ffi::load_cdylib`.
-#
-# Replaces the v1 helper-binary model (fork(2) + exec(2) + fresh TCP+TLS+
-# auth handshake per call). The cdylib holds one shared tokio runtime +
-# a mongodb::Client cache keyed by connection URI. Back-to-back calls
-# reuse the same client + underlying connection pool.
+## lib/Mongo.stk — MongoDB client for stryke (`use Mongo`).
+##
+## Thin wrapper around the `stryke-mongo` cdylib's `mongo__*` exports.
+## The cdylib is dlopened in-process on first `use Mongo` (see stryke's
+## `pkg/commands.rs::try_load_ffi_for`) and registers each export as a
+## stryke-callable function via `rust_ffi::load_cdylib`.
+##
+## Replaces the v1 helper-binary model (fork(2) + exec(2) + fresh TCP+TLS+
+## auth handshake per call). The cdylib holds one shared tokio runtime +
+## a mongodb::Client cache keyed by connection URI. Back-to-back calls
+## reuse the same client + underlying connection pool.
 
 package Mongo
 
@@ -85,9 +85,9 @@ fn Mongo::aggregate ($target, $pipeline, %opts) {
     @{ $o->{docs} }
 }
 
-# Streaming find (cursor-style) — the v1 helper streamed NDJSON over a
-# pipe. The cdylib materializes all rows in one call; pipe-flush latency
-# is gone, so buffered callback iteration is equivalent in throughput.
+## Streaming find (cursor-style) — the v1 helper streamed NDJSON over a
+## pipe. The cdylib materializes all rows in one call; pipe-flush latency
+## is gone, so buffered callback iteration is equivalent in throughput.
 fn Mongo::find_stream ($target, %opts) {
     die "Mongo::find_stream: callback => sub { … } required" unless defined $opts{callback}
     my $cb = $opts{callback}
