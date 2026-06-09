@@ -179,4 +179,3 @@ fn Mongo::indexes ($target, %opts) {
     @{ $o->{indexes} }
 }
 
-1
