@@ -463,3 +463,86 @@ pub extern "C" fn mongo__drop_index(args: *const c_char) -> *const c_char {
 pub extern "C" fn mongo__indexes(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_indexes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_target_dotted_form() {
+        let (db, coll) = parse_target(&json!({"target": "shop.orders"}), None).unwrap();
+        assert_eq!(db, "shop");
+        assert_eq!(coll, "orders");
+    }
+
+    #[test]
+    fn parse_target_uses_default_db_when_no_dot() {
+        let (db, coll) = parse_target(&json!({"target": "orders"}), Some("shop")).unwrap();
+        assert_eq!(db, "shop");
+        assert_eq!(coll, "orders");
+    }
+
+    #[test]
+    fn parse_target_no_dot_no_default_errors() {
+        let err = parse_target(&json!({"target": "orders"}), None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("no db prefix"), "{err}");
+        assert!(err.contains("orders"), "{err}");
+    }
+
+    #[test]
+    fn parse_target_missing_errors() {
+        let err = parse_target(&json!({}), None).unwrap_err().to_string();
+        assert!(err.contains("missing target"), "{err}");
+    }
+
+    #[test]
+    fn parse_target_first_dot_is_separator() {
+        // `db.with.dots.coll` → db="db", coll="with.dots.coll".
+        // First dot wins; mongo collection names may contain dots.
+        let (db, coll) = parse_target(&json!({"target": "db.with.dots.coll"}), None).unwrap();
+        assert_eq!(db, "db");
+        assert_eq!(coll, "with.dots.coll");
+    }
+
+    #[test]
+    fn json_to_doc_round_trips_object() {
+        let v = json!({"name": "ada", "age": 36});
+        let d = json_to_doc(&v).unwrap();
+        assert_eq!(d.get_str("name").unwrap(), "ada");
+        // serde_json::Number → bson::Bson maps integers to i64 by default,
+        // not i32 — assert against the wider type.
+        assert_eq!(d.get_i64("age").unwrap(), 36);
+    }
+
+    #[test]
+    fn json_to_doc_null_yields_empty_doc() {
+        let d = json_to_doc(&Value::Null).unwrap();
+        assert_eq!(d.len(), 0);
+    }
+
+    #[test]
+    fn json_to_doc_non_object_errors() {
+        let err = json_to_doc(&json!([1, 2, 3])).unwrap_err().to_string();
+        assert!(err.contains("expected JSON object"), "{err}");
+    }
+
+    #[test]
+    fn doc_to_json_round_trips() {
+        let d = doc! { "id": 1, "name": "ada" };
+        let v = doc_to_json(&d).unwrap();
+        assert_eq!(v["id"], json!(1));
+        assert_eq!(v["name"], json!("ada"));
+    }
+
+    #[test]
+    fn json_to_doc_to_json_preserves_basic_fields() {
+        let original = json!({"city": "ny", "active": true, "count": 42});
+        let d = json_to_doc(&original).unwrap();
+        let back = doc_to_json(&d).unwrap();
+        assert_eq!(back["city"], json!("ny"));
+        assert_eq!(back["active"], json!(true));
+        assert_eq!(back["count"], json!(42));
+    }
+}

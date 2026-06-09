@@ -1,120 +1,80 @@
-# t/test_mongo.stk — round-trip against a live MongoDB.
-#
-# Requires the cdylib to be loaded. Install once with `s pkg install -g .`
-# from the package root so stryke's FFI bridge dlopens
-# lib/libstryke_mongo.{dylib,so} on `use Mongo`.
-#
-# Uses a unique collection `stryke_test_$$` and cleans up at exit.
+## t/test_mongo.stk — assertion tests for the stryke `Mongo` package.
+##
+## Uses stryke's native test framework (`assert_*` + `test_run`).
+## Requires the cdylib to be loaded — install once with `s pkg install -g .`
+## so stryke's FFI bridge dlopens `lib/libstryke_mongo.{dylib,so}` on
+## `use Mongo`. Live tests use a unique collection `stryke_test_$$` and
+## clean up at exit when MongoDB is reachable (defaults to mongodb://
+## localhost; override with $MONGODB_URI).
 
 use Mongo
 
-val $have_cdylib = eval { Mongo::version(); 1 }
-unless ($have_cdylib) {
-    p "1..0 # SKIP cdylib not loaded — run `s pkg install -g .` first"
-    exit 0
-}
+# ── permission-free: cdylib reachable ───────────────────────────────
+val $version = Mongo::version()
+assert_ok $version, "Mongo::version returns truthy (cdylib loaded)"
 
+# ── liveness probe ──────────────────────────────────────────────────
 var %conn
 $conn{uri} = $ENV{MONGODB_URI} if defined $ENV{MONGODB_URI}
-unless (eval { Mongo::ping(%conn) }) {
-    p "1..0 # SKIP MongoDB unreachable"
-    exit 0
-}
+val $alive = eval { Mongo::ping(%conn) }
 
-val $coll = "stryke_test_$$"
-val $tgt  = "stryke_test/$coll"
-p "1..9"
-var $i = 0
+if ($alive) {
+    val $coll = "stryke_test_$$"
+    val $tgt  = "stryke_test/$coll"
 
-# 1. insert_one
-var $r
-eval { $r = Mongo::insert_one($tgt, { name => "alice", age => 30, role => "admin" }, %conn) }
-$i++
-p $@ ? "not ok $i - insert_one: $@" :
-       (defined $r->{inserted_id} ? "ok $i - insert_one" : "not ok $i - insert_one wrong shape")
+    # 1. insert_one
+    val $ins1 = Mongo::insert_one($tgt, { name => "alice", age => 30, role => "admin" }, %conn)
+    assert_ok defined $ins1->{inserted_id}, "insert_one: returns inserted_id"
 
-# 2. insert_many
-eval {
-    $r = Mongo::insert_many($tgt,
+    # 2. insert_many
+    val $ins2 = Mongo::insert_many($tgt,
         [{ name => "bob", age => 25 },
          { name => "charlie", age => 35 },
          { name => "dana", age => 28 }],
         %conn)
-}
-$i++
-p $@ ? "not ok $i - insert_many: $@" :
-       ($r->{inserted} == 3 ? "ok $i - insert_many" : "not ok $i - inserted=$r->{inserted}")
+    assert_eq $ins2->{inserted}, 3, "insert_many: inserted=3"
 
-# 3. count
-var $n
-eval { $n = Mongo::count($tgt, %conn) }
-$i++
-p $@ ? "not ok $i - count: $@" : ($n == 4 ? "ok $i - count" : "not ok $i - count=$n")
+    # 3. count
+    assert_eq Mongo::count($tgt, %conn), 4, "count after insert: 4"
 
-# 4. find with filter+sort+limit
-var @docs
-eval {
-    @docs = Mongo::find($tgt,
-                        filter => { age => { '$gte' => 28 } },
-                        sort   => { age => 1 },
-                        limit  => 10,
-                        %conn)
-}
-$i++
-p $@ ? "not ok $i - find: $@" :
-       (len(@docs) == 3 && $docs[0]->{name} eq "dana"
-            ? "ok $i - find (sorted)"
-            : "not ok $i - find shape: " . to_json(\@docs))
+    # 4. find with filter+sort+limit
+    val @docs = Mongo::find($tgt,
+                            filter => { age => { '$gte' => 28 } },
+                            sort   => { age => 1 },
+                            limit  => 10,
+                            %conn)
+    assert_eq scalar(@docs), 3, "find ≥28: 3 docs"
+    assert_eq $docs[0]->{name}, "dana", "find sorted: smallest age first"
 
-# 5. find_one
-var $one
-eval { $one = Mongo::find_one($tgt, filter => { name => "alice" }, %conn) }
-$i++
-p $@ ? "not ok $i - find_one: $@" :
-       (defined $one && $one->{name} eq "alice" && $one->{role} eq "admin"
-            ? "ok $i - find_one"
-            : "not ok $i - find_one wrong")
+    # 5. find_one
+    val $one = Mongo::find_one($tgt, filter => { name => "alice" }, %conn)
+    assert_eq $one->{name}, "alice", "find_one: name"
+    assert_eq $one->{role}, "admin", "find_one: role"
 
-# 6. update_one
-eval {
-    $r = Mongo::update_one($tgt,
-                          { name => "alice" },
-                          { '$set' => { role => "superadmin", level => 99 } },
-                          %conn)
-}
-$i++
-p $@ ? "not ok $i - update_one: $@" :
-       ($r->{matched} == 1 && $r->{modified} == 1
-            ? "ok $i - update_one"
-            : "not ok $i - update_one wrong")
+    # 6. update_one
+    val $upd = Mongo::update_one($tgt,
+                                { name => "alice" },
+                                { '$set' => { role => "superadmin", level => 99 } },
+                                %conn)
+    assert_eq $upd->{matched}, 1, "update_one: matched=1"
+    assert_eq $upd->{modified}, 1, "update_one: modified=1"
 
-# 7. aggregate
-var @grouped
-eval {
-    @grouped = Mongo::aggregate($tgt,
+    # 7. aggregate (group by role)
+    val @grouped = Mongo::aggregate($tgt,
         [ { '$group' => { _id => '$role', n => { '$sum' => 1 } } } ],
         %conn)
+    assert_ge scalar(@grouped), 1, "aggregate: ≥1 group"
+
+    # 8. create_index
+    val $idx = Mongo::create_index($tgt, { name => 1 }, unique => 1, %conn)
+    assert_eq $idx->{name}, "name_1", "create_index: returns index name name_1"
+
+    # 9. delete_many
+    val $del = Mongo::delete_many($tgt, {}, %conn)
+    assert_eq $del->{deleted}, 4, "delete_many: deleted=4"
+
+    # cleanup
+    eval { Mongo::drop_index($tgt, "name_1", %conn) }
 }
-$i++
-p $@ ? "not ok $i - aggregate: $@" :
-       (len(@grouped) >= 1 ? "ok $i - aggregate (#{len(@grouped)} groups)" :
-        "not ok $i - aggregate empty")
 
-# 8. create_index
-var $idx
-eval { $idx = Mongo::create_index($tgt, { name => 1 }, unique => 1, %conn) }
-$i++
-p $@ ? "not ok $i - create_index: $@" :
-       ($idx->{name} eq "name_1" ? "ok $i - create_index" :
-        "not ok $i - create_index got $idx->{name}")
-
-# 9. delete_many + drop collection
-var $del
-eval { $del = Mongo::delete_many($tgt, {}, %conn) }
-$i++
-p $@ ? "not ok $i - delete_many: $@" :
-       ($del->{deleted} == 4 ? "ok $i - delete_many" :
-        "not ok $i - deleted=$del->{deleted}")
-
-# cleanup: drop the index then the collection (best-effort)
-eval { Mongo::drop_index($tgt, "name_1", %conn) }
+test_run
