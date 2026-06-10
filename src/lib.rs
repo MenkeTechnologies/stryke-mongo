@@ -692,4 +692,187 @@ mod tests {
         assert_eq!(db, "");
         assert_eq!(coll, "");
     }
+
+    /// `ffi_call_async` silently substitutes `Value::Null` for any args
+    /// bytes that fail `serde_json::from_slice` (see the `unwrap_or` at
+    /// the input-parsing site). That means a stryke marshalling bug
+    /// that hands the cdylib non-JSON bytes (truncated buffer, wrong
+    /// encoding, accidental Pascal-string prefix) is invisible — the
+    /// handler runs as if the caller passed no args at all, and the
+    /// downstream error is the wrong one ("missing target" rather than
+    /// "malformed args").
+    ///
+    /// Pin the current (silent-swallow) behavior so any future change
+    /// that surfaces the parse error gets attention here and the boss
+    /// can decide whether to keep the silent fallback or convert it to
+    /// `{"error":"malformed JSON args"}`. We pick a handler that
+    /// observes whether the input is `Null` vs anything else, so we
+    /// can detect the substitution without depending on op-specific
+    /// error wording. Worth a hand-rolled test because the only other
+    /// FFI test exercises the panic path, not the input-parse path.
+    #[test]
+    fn ffi_call_async_silently_substitutes_null_for_malformed_json_args() {
+        // `not json at all {` is intentionally not parseable as JSON.
+        // CString::new still accepts it (no interior NULs).
+        let bad = CString::new("not json at all {").unwrap();
+        let ptr = ffi_call_async(bad.as_ptr(), |v: Value| async move {
+            // Echo back whether the input was Null or not. If the
+            // substitution stopped happening (e.g. the unwrap_or got
+            // replaced with a real error envelope), `received_null`
+            // would be `false`/absent and this assert would fire.
+            Ok(json!({ "received_null": v.is_null() }))
+        });
+        assert!(
+            !ptr.is_null(),
+            "ffi_call_async must always return a CString"
+        );
+        let s = unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_string() };
+        let out: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            out["received_null"],
+            json!(true),
+            "ffi_call_async no longer substitutes Value::Null on malformed JSON args — \
+             decide whether to keep the silent-swallow or convert to an explicit error \
+             envelope, then update this test"
+        );
+        unsafe { stryke_free_cstring(ptr as *mut c_char) };
+    }
+
+    /// MongoDB extended-JSON `{"$oid": "..."}` is interpreted by
+    /// `bson::to_bson` as an `ObjectId` BSON value, not as a regular
+    /// nested document with a `$oid` field. The serializer path then
+    /// re-emits that ObjectId in the same `{"$oid": "..."}` extended
+    /// form. The risk this catches: a future "helpful" refactor that
+    /// switches `doc_to_json` away from `serde_json::to_value(d)` to
+    /// e.g. canonical JSON or relaxed-mode JSON would silently change
+    /// the shape stryke users see — breaking every `Mongo::find` /
+    /// `Mongo::insert_one` round-trip that involves `_id`.
+    ///
+    /// Pinning the current shape so that the contract is explicit:
+    /// extended-JSON in => extended-JSON out, byte-equal. If the
+    /// driver bson crate ever changes its default serializer mode,
+    /// this catches it on the next CI run rather than silently in
+    /// production stryke scripts.
+    #[test]
+    fn json_to_doc_round_trips_object_id_extended_json_byte_equal() {
+        let oid_hex = "507f1f77bcf86cd799439011";
+        let input = json!({"_id": {"$oid": oid_hex}});
+        let d = json_to_doc(&input).unwrap();
+        // Confirm bson actually interpreted `$oid` as an ObjectId, not
+        // a nested document. If a future refactor of `json_to_doc`
+        // switches to a serializer that keeps `$oid` as a sub-doc,
+        // this assert tells us the round-trip semantics changed.
+        let id_bson = d.get("_id").expect("missing _id");
+        assert!(
+            matches!(id_bson, Bson::ObjectId(_)),
+            "expected _id to deserialize as Bson::ObjectId, got {id_bson:?} — \
+             a refactor changed json_to_doc's extended-JSON interpretation"
+        );
+        // And round-trip: doc_to_json must re-emit the `$oid` form so
+        // the user-visible shape stays the same on the way out.
+        let back = doc_to_json(&d).unwrap();
+        assert_eq!(
+            back["_id"]["$oid"].as_str().unwrap(),
+            oid_hex,
+            "doc_to_json no longer re-emits ObjectId as $oid extended JSON — \
+             every stryke find/insert round-trip just broke"
+        );
+    }
+
+    /// `json_to_doc` must reject EVERY non-object non-null JSON primitive
+    /// with the same "expected JSON object" error. The existing coverage
+    /// only checks arrays — but `bson::to_bson` will happily convert a
+    /// JSON string into `Bson::String`, a number into `Bson::Int64`, a
+    /// bool into `Bson::Boolean`, etc., each of which lands in the `_ =>`
+    /// arm. A future "smart" refactor that special-cases say `Value::Bool`
+    /// as a shorthand for `{$truthy: true}` would silently change filter
+    /// semantics for every `Mongo::find` / `Mongo::count` call where the
+    /// user fat-fingered `filter: true` instead of `filter: {active:
+    /// true}`. Pinning that all four primitive shapes still error keeps
+    /// the contract explicit: only `{}` and `null` are accepted.
+    ///
+    /// Catches: any future divergence between primitive-rejection paths
+    /// (someone fixing one without the others), or relaxation of the
+    /// rejection that would make malformed filters silently match.
+    #[test]
+    fn json_to_doc_rejects_all_non_object_primitives_uniformly() {
+        let cases = [
+            ("bool true", json!(true)),
+            ("bool false", json!(false)),
+            ("int", json!(42)),
+            ("negative int", json!(-7)),
+            ("float", json!(1.5)),
+            ("string", json!("not a doc")),
+            ("empty string", json!("")),
+            ("array", json!([1, 2, 3])),
+            ("empty array", json!([])),
+        ];
+        for (label, v) in cases.iter() {
+            let err = json_to_doc(v)
+                .err()
+                .unwrap_or_else(|| panic!("{label}: expected error, got Ok"))
+                .to_string();
+            assert!(
+                err.contains("expected JSON object"),
+                "{label}: error wording drifted — got {err:?}; \
+                 a refactor likely special-cased this primitive shape \
+                 and broke filter-rejection uniformity",
+            );
+        }
+    }
+
+    /// MongoDB extended-JSON `{"$date": {"$numberLong": "<ms>"}}` is the
+    /// canonical wire form for timestamps. `bson::to_bson` interprets it
+    /// as `Bson::DateTime` and `serde_json::to_value` re-emits the same
+    /// extended form on the way out. This is the date-side analogue of
+    /// the existing `$oid` round-trip test — both pins guard the
+    /// driver's serializer mode (`relaxed` vs `canonical` vs `legacy`).
+    ///
+    /// Risk this catches: a bson-crate upgrade that flips the default to
+    /// relaxed mode would emit `{"$date": "2026-06-10T..."}` (ISO string)
+    /// instead of the `{"$numberLong": ...}` envelope, silently breaking
+    /// every stryke script that round-trips `created_at` timestamps
+    /// through `Mongo::find` → modify → `Mongo::update_one`. The user-
+    /// visible shape changes WITHOUT a stryke-mongo version bump.
+    ///
+    /// Worth a hand-rolled test because the only existing extended-JSON
+    /// pin (`$oid`) covers ObjectIds — dates have their own serializer
+    /// mode and would not be caught by the ObjectId test.
+    #[test]
+    fn json_to_doc_round_trips_date_extended_json_byte_equal() {
+        // 2026-06-10T00:00:00Z in epoch ms.
+        let epoch_ms: i64 = 1_780_704_000_000;
+        let input = json!({
+            "created_at": {"$date": {"$numberLong": epoch_ms.to_string()}}
+        });
+        let d = json_to_doc(&input).unwrap();
+        let dt_bson = d.get("created_at").expect("missing created_at");
+        assert!(
+            matches!(dt_bson, Bson::DateTime(_)),
+            "expected created_at to deserialize as Bson::DateTime, got \
+             {dt_bson:?} — a refactor changed json_to_doc's extended-JSON \
+             date interpretation; every stryke timestamp round-trip just \
+             changed shape",
+        );
+        let back = doc_to_json(&d).unwrap();
+        // serde_json::to_value on a Bson::DateTime must re-emit the
+        // `$date` envelope (canonical mode). The exact inner shape
+        // (`$numberLong` vs ISO string) is what we're pinning — if the
+        // driver flips to relaxed mode, `back["created_at"]["$date"]`
+        // will be a string instead of an object and this assert fires.
+        let date_field = &back["created_at"]["$date"];
+        assert!(
+            date_field.is_object(),
+            "doc_to_json no longer re-emits DateTime as \
+             {{\"$date\":{{\"$numberLong\":...}}}} canonical extended JSON \
+             (got {date_field:?}) — bson serializer mode drifted to \
+             relaxed; stryke scripts that pattern-match on $numberLong \
+             will silently break",
+        );
+        assert_eq!(
+            date_field["$numberLong"].as_str().unwrap(),
+            epoch_ms.to_string(),
+            "DateTime epoch_ms round-trip drifted from input",
+        );
+    }
 }
