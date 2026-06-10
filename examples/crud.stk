@@ -4,7 +4,13 @@
 
 use Mongo
 
-val $t = "demo/users"
+val $alive = eval { Mongo::ping() }
+unless ($alive) {
+    p "mongod not reachable — set MONGODB_URI or start mongod to exercise the demo"
+    exit 0
+}
+
+val $t = "demo.users"
 
 val $r = Mongo::insert_one $t, { name => "alice", age => 30, tags => ["admin","analyst"] }
 p "inserted: " . to_json($r->{inserted_id})

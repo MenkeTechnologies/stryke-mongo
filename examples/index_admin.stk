@@ -4,7 +4,13 @@
 
 use Mongo
 
-val $t = "demo/users"
+val $alive = eval { Mongo::ping() }
+unless ($alive) {
+    p "mongod not reachable — set MONGODB_URI or start mongod to exercise the demo"
+    exit 0
+}
+
+val $t = "demo.users"
 
 Mongo::create_index $t, { name => 1 }, unique => 1
 Mongo::create_index $t, { age => -1 }
