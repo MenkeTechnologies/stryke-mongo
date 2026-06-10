@@ -573,11 +573,7 @@ mod tests {
     /// (db=shop, coll=events.2026).
     #[test]
     fn parse_target_multi_dot_keeps_everything_after_first_dot_as_coll() {
-        let (db, coll) = parse_target(
-            &json!({"target": "shop.events.2026"}),
-            None,
-        )
-        .unwrap();
+        let (db, coll) = parse_target(&json!({"target": "shop.events.2026"}), None).unwrap();
         assert_eq!(db, "shop");
         assert_eq!(coll, "events.2026");
     }
@@ -601,11 +597,8 @@ mod tests {
     /// already contains a dot, the in-target db wins.
     #[test]
     fn parse_target_in_target_db_wins_over_default_db() {
-        let (db, coll) = parse_target(
-            &json!({"target": "explicit.coll"}),
-            Some("fallback"),
-        )
-        .unwrap();
+        let (db, coll) =
+            parse_target(&json!({"target": "explicit.coll"}), Some("fallback")).unwrap();
         assert_eq!(db, "explicit");
         assert_eq!(coll, "coll");
     }
