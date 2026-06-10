@@ -1,0 +1,41 @@
+#!/usr/bin/env stryke
+# examples/discover.stk — minimum-viable tour of the `Mongo` package.
+#
+# Runs end-to-end in CI: with no live mongod the 2s-default connect
+# timeout (v0.2.1+) trips quickly so the eval-guard returns false-ish.
+# The round-trip block skips and the summary still prints. With $MONGODB_URI
+# pointing at a real server, the demo lists databases + collections (read-only).
+#
+# Run:   s examples/discover.stk
+#        MONGODB_URI=mongodb://localhost:27017 s examples/discover.stk
+
+use Mongo
+
+p "=== Mongo discover ==="
+p "version:     " . Mongo::version()
+p "MONGODB_URI: " . ($ENV{MONGODB_URI} // "(default mongodb://127.0.0.1:27017)")
+p ""
+
+val $alive = eval { Mongo::ping() }
+
+if ($alive && !$@) {
+    p "service: reachable — listing read-only metadata"
+    val $dbs = Mongo::list_databases()
+    val @names = @{ $dbs->{databases} // [] }
+    p "  databases: " . scalar(@names) . " (" . join(", ", @names[0..2], (scalar(@names) > 3 ? "...) " : ")"))
+    for val $db (@names[0..1]) {
+        next unless defined $db
+        val $colls = eval { Mongo::list_collections(db => $db) }
+        if (defined $colls) {
+            val @cs = @{ $colls->{collections} // [] }
+            p "    $db: " . scalar(@cs) . " collections"
+        }
+    }
+} else {
+    p "service: not reachable — skipping live ops"
+    p ""
+    p "expected call shape when live:"
+    p "  val \$dbs   = Mongo::list_databases()"
+    p "  val \$colls = Mongo::list_collections(db => \"mydb\")"
+    p "  val @rows  = Mongo::find(\"mydb.users\", filter => { active => 1 })"
+}
