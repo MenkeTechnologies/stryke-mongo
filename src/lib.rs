@@ -609,4 +609,93 @@ mod tests {
         assert_eq!(db, "explicit");
         assert_eq!(coll, "coll");
     }
+
+    // ── audit additions ────────────────────────────────────────────────────
+
+    /// pkg_version is the one export that hits no network and no mongo
+    /// client cache — it's the canary for the FFI plumbing itself. This
+    /// pins:
+    ///   * null input (handler runs with Value::Null, doesn't panic)
+    ///   * returned pointer is a valid non-null C string
+    ///   * JSON envelope contains {"version": ...} matching CARGO_PKG_VERSION
+    ///   * stryke_free_cstring on the returned pointer doesn't crash and
+    ///     accepts the *mut cast (mirrors what stryke's FFI bridge does)
+    /// If ffi_call_async ever regressed to panicking on null args, or
+    /// stopped returning a valid CString, or stryke_free_cstring's null
+    /// guard broke, this would catch it.
+    #[test]
+    fn pkg_version_ffi_roundtrip_with_null_args_and_free() {
+        let ptr = mongo__pkg_version(std::ptr::null());
+        assert!(!ptr.is_null(), "pkg_version returned null");
+        // SAFETY: ptr came from CString::into_raw inside ffi_call_async.
+        let s = unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_string() };
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            v["version"].as_str().unwrap(),
+            env!("CARGO_PKG_VERSION"),
+            "pkg_version FFI envelope drifted from CARGO_PKG_VERSION"
+        );
+        // Reclaim ownership via the public free fn — the actual API
+        // stryke calls on every returned string. Also exercises the
+        // *mut c_char cast.
+        unsafe { stryke_free_cstring(ptr as *mut c_char) };
+        // And the null guard.
+        unsafe { stryke_free_cstring(std::ptr::null_mut()) };
+    }
+
+    /// ffi_call_async catches panics inside the handler future and
+    /// converts them to a JSON error envelope, NOT an unwind through
+    /// the C ABI boundary (which is UB). This is the load-bearing
+    /// safety net for the entire cdylib — if it ever broke, every
+    /// panic in any handler would corrupt the host process.
+    ///
+    /// We invoke ffi_call_async directly with a synchronous handler
+    /// that panics inside its async body, then assert we get the
+    /// "stryke-mongo handler panicked" envelope back as a valid
+    /// CString (not a null pointer, not an unwind).
+    #[test]
+    fn ffi_call_async_converts_handler_panic_to_error_envelope() {
+        let args = CString::new(r#"{}"#).unwrap();
+        let ptr = ffi_call_async(args.as_ptr(), |_v: Value| async {
+            panic!("synthetic handler panic — should be caught by AssertUnwindSafe");
+            #[allow(unreachable_code)]
+            Ok::<Value, anyhow::Error>(json!({}))
+        });
+        assert!(!ptr.is_null(), "panic path must still return a CString");
+        let s = unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_string() };
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            v["error"].as_str().unwrap(),
+            "stryke-mongo handler panicked",
+            "panic envelope drift — handler panics may now leak across FFI (UB)"
+        );
+        unsafe { stryke_free_cstring(ptr as *mut c_char) };
+    }
+
+    /// parse_target's `find('.')` returns the FIRST dot's byte offset.
+    /// Three boundary inputs that are technically accepted but
+    /// semantically broken: empty db, empty coll, and just ".". The
+    /// driver will reject these at the mongo wire layer, but the helper
+    /// passes them through. Pinning current behavior so the boss sees
+    /// the gap explicitly — if a future guard rejects empty components,
+    /// this test breaks and the new behavior gets pinned by an updated
+    /// test rather than slipped in by accident.
+    /// (`""` alone is covered by the upstream empty-string test above.)
+    #[test]
+    fn parse_target_accepts_empty_db_or_coll_silently() {
+        // Empty db component, non-empty coll.
+        let (db, coll) = parse_target(&json!({"target": ".orders"}), None).unwrap();
+        assert_eq!(db, "");
+        assert_eq!(coll, "orders");
+
+        // Non-empty db, empty coll component.
+        let (db, coll) = parse_target(&json!({"target": "shop."}), None).unwrap();
+        assert_eq!(db, "shop");
+        assert_eq!(coll, "");
+
+        // Both empty — just a dot.
+        let (db, coll) = parse_target(&json!({"target": "."}), None).unwrap();
+        assert_eq!(db, "");
+        assert_eq!(coll, "");
+    }
 }
