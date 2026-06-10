@@ -564,4 +564,49 @@ mod tests {
         assert_eq!(back["active"], json!(true));
         assert_eq!(back["count"], json!(42));
     }
+
+    /// Multi-dot target `"db.coll.sub"` — first dot wins, everything after
+    /// is the coll name. Pin the contract so a future refactor that
+    /// "helpfully" rsplits or rejects the multi-dot form gets caught.
+    /// Real-world use: collection names with dots are legal in MongoDB,
+    /// so a hand-written `"shop.events.2026"` must round-trip as
+    /// (db=shop, coll=events.2026).
+    #[test]
+    fn parse_target_multi_dot_keeps_everything_after_first_dot_as_coll() {
+        let (db, coll) = parse_target(
+            &json!({"target": "shop.events.2026"}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(db, "shop");
+        assert_eq!(coll, "events.2026");
+    }
+
+    /// Empty `target` string with no default_db → error (not silent
+    /// success with empty db/coll). Pin this so a future refactor that
+    /// short-circuits empty-string to `("", "")` instead of erroring
+    /// gets caught at test time.
+    #[test]
+    fn parse_target_empty_string_errors_without_default_db() {
+        let err = parse_target(&json!({"target": ""}), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no db prefix") || err.contains("has no db"),
+            "got: {err}"
+        );
+    }
+
+    /// `default_db` only fills in when `target` has no dot — if `target`
+    /// already contains a dot, the in-target db wins.
+    #[test]
+    fn parse_target_in_target_db_wins_over_default_db() {
+        let (db, coll) = parse_target(
+            &json!({"target": "explicit.coll"}),
+            Some("fallback"),
+        )
+        .unwrap();
+        assert_eq!(db, "explicit");
+        assert_eq!(coll, "coll");
+    }
 }
