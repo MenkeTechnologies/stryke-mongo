@@ -65,6 +65,25 @@ async fn get_client(opts: &Value) -> Result<Client> {
     }
     let mut co = ClientOptions::parse(&uri).await?;
     co.app_name = Some("stryke-mongo".to_string());
+    // Default to fast-fail timeouts so `Mongo::ping` on a missing/wrong
+    // host returns in seconds, not in the mongodb driver's 30s default.
+    // Skipped when the URI sets the same params (driver fills them from
+    // `?serverSelectionTimeoutMS=...` / `?connectTimeoutMS=...`); both
+    // are independently overridable via the `opts` hash.
+    let sst_ms = opts
+        .get("server_selection_timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2000);
+    let ct_ms = opts
+        .get("connect_timeout_ms")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2000);
+    if co.server_selection_timeout.is_none() {
+        co.server_selection_timeout = Some(std::time::Duration::from_millis(sst_ms));
+    }
+    if co.connect_timeout.is_none() {
+        co.connect_timeout = Some(std::time::Duration::from_millis(ct_ms));
+    }
     let client = Client::with_options(co)?;
     clients().lock().insert(uri, client.clone());
     Ok(client)
