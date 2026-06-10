@@ -1,0 +1,40 @@
+## t/test_stryke_mongo_surface.stk — wrapper-completeness pin.
+##
+## Asserts every public `fn X::Y::name` declared in lib/*.stk is
+## reachable via `use` at runtime. Uses `exists &X::Y::name` to
+## probe the symbol table without invoking the sub.
+##
+## Catches:
+##   * a wrapper sub deleted from lib/ but still referenced elsewhere
+##   * a sub-package file dropped from the install layout
+##   * `use Foo::Bar` failing to chase into lib/Bar.stk
+##   * an installed-package entry whose namespace bridge is broken
+##
+## Permission-free — no service, no creds, no live daemon. Private
+## helpers (`_` prefix) are implementation detail and are NOT
+## asserted, so refactoring internals stays free.
+
+use Mongo
+
+# ── Mongo.stk ──────────────────────────────────────────────
+assert_ok exists &Mongo::version, "Mongo::version exists"
+assert_ok exists &Mongo::ping, "Mongo::ping exists"
+assert_ok exists &Mongo::list_databases, "Mongo::list_databases exists"
+assert_ok exists &Mongo::list_collections, "Mongo::list_collections exists"
+assert_ok exists &Mongo::find, "Mongo::find exists"
+assert_ok exists &Mongo::find_one, "Mongo::find_one exists"
+assert_ok exists &Mongo::count, "Mongo::count exists"
+assert_ok exists &Mongo::aggregate, "Mongo::aggregate exists"
+assert_ok exists &Mongo::find_stream, "Mongo::find_stream exists"
+assert_ok exists &Mongo::insert_one, "Mongo::insert_one exists"
+assert_ok exists &Mongo::insert_many, "Mongo::insert_many exists"
+assert_ok exists &Mongo::update_one, "Mongo::update_one exists"
+assert_ok exists &Mongo::update_many, "Mongo::update_many exists"
+assert_ok exists &Mongo::replace_one, "Mongo::replace_one exists"
+assert_ok exists &Mongo::delete_one, "Mongo::delete_one exists"
+assert_ok exists &Mongo::delete_many, "Mongo::delete_many exists"
+assert_ok exists &Mongo::create_index, "Mongo::create_index exists"
+assert_ok exists &Mongo::drop_index, "Mongo::drop_index exists"
+assert_ok exists &Mongo::indexes, "Mongo::indexes exists"
+
+test_run
