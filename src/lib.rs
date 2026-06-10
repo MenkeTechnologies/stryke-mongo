@@ -613,6 +613,7 @@ mod tests {
     ///   * JSON envelope contains {"version": ...} matching CARGO_PKG_VERSION
     ///   * stryke_free_cstring on the returned pointer doesn't crash and
     ///     accepts the *mut cast (mirrors what stryke's FFI bridge does)
+    ///
     /// If ffi_call_async ever regressed to panicking on null args, or
     /// stopped returning a valid CString, or stryke_free_cstring's null
     /// guard broke, this would catch it.
