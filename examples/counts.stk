@@ -1,0 +1,45 @@
+#!/usr/bin/env stryke
+# examples/counts.stk — per-collection document counts across all databases.
+#
+# Read-only: list_databases + list_collections + count_documents per
+# collection. Eval-guarded — missing mongod exits cleanly.
+#
+# Run:   s examples/counts.stk
+#        MONGODB_URI=mongodb://localhost:27017 s examples/counts.stk
+
+use Mongo
+
+p "=== Mongo per-collection counts ==="
+
+val $alive = eval { Mongo::ping() }
+unless ($alive) {
+    p "mongod not reachable — set MONGODB_URI or start mongod to exercise the demo"
+    exit 0
+}
+
+val $dbs = Mongo::list_databases()
+val @names = @{ $dbs->{databases} // [] }
+p "databases: " . scalar(@names)
+p ""
+
+var $grand_total = 0
+for val $db (@names) {
+    # Skip the admin metadata dbs that always exist and aren't interesting.
+    next if $db eq "admin" || $db eq "local" || $db eq "config"
+
+    val $colls = eval { Mongo::list_collections(db => $db) }
+    next if $@
+    val @cs = @{ $colls->{collections} // [] }
+    next if scalar(@cs) == 0
+
+    p "$db (" . scalar(@cs) . " collection(s)):"
+    for val $c (@cs) {
+        val $n = eval { Mongo::count("$db.$c") }
+        next if $@
+        $grand_total += $n
+        printf "  %8d  %s\n", $n, $c
+    }
+}
+
+p ""
+p "grand total: $grand_total documents"
