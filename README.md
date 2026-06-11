@@ -31,7 +31,7 @@ tier.
 - [\[0x02\] CLI: `mongo`](#0x02-cli-mongo)
 - [\[0x03\] API reference](#0x03-api-reference)
 - [\[0x04\] BSON type encoding](#0x04-bson-type-encoding)
-- [\[0x05\] Helper protocol](#0x05-helper-protocol)
+- [\[0x05\] FFI layer](#0x05-ffi-layer)
 - [\[0x06\] Tests](#0x06-tests)
 - [\[0x07\] Dev workflow](#0x07-dev-workflow)
 - [\[0x08\] Layout](#0x08-layout)
@@ -92,7 +92,7 @@ my @over30 = Mongo::find "app/users",
                          limit  => 100
 @over30 |> ep
 
-# Streaming variant — callback per doc, no buffering on the stryke side.
+# Callback-per-doc variant (cdylib materializes the result, then iterates).
 Mongo::find_stream "app/events",
     filter   => { ts => { '$gte' => $cutoff } },
     callback => sub ($d) { process $d }
@@ -104,7 +104,7 @@ Mongo::update_one "app/users",
 Mongo::update_many "app/users", { active => 1 }, { '$inc' => { score => 1 } }
 
 # Replace whole document.
-Mongo::replace_one "app/users", { _id => $oid }, { ...new doc... }, upsert => 1
+Mongo::replace_one "app/users", { _id => $oid }, { ...new doc... }
 
 # Aggregation pipeline (any standard stage).
 my @top = Mongo::aggregate "app/orders", [
@@ -115,9 +115,9 @@ my @top = Mongo::aggregate "app/orders", [
 ]
 
 # Index admin.
-Mongo::create_index "app/users", { email => 1 }, unique => 1, name => "uniq_email"
+my $idx = Mongo::create_index "app/users", { email => 1 }
 Mongo::indexes "app/users" |> ep
-Mongo::drop_index "app/users", "uniq_email"
+Mongo::drop_index "app/users", $idx
 
 # Discovery.
 my @dbs   = Mongo::list_databases
@@ -180,36 +180,34 @@ Mongo::aggregate    $target, \@pipeline, %opts → @docs
 
 ```stryke
 Mongo::insert_one   $target, \%doc, %opts → { inserted_id }
-Mongo::insert_many  $target, \@docs, %opts → { inserted, ids }
-Mongo::update_one   $target, \%filter, \%update, %opts → { matched, modified, upserted_id }
-Mongo::update_many  $target, \%filter, \%update, %opts → { matched, modified }
-Mongo::replace_one  $target, \%filter, \%doc, %opts → { matched, modified, upserted_id }
-Mongo::delete_one   $target, \%filter, %opts → { deleted }
-Mongo::delete_many  $target, \%filter, %opts → { deleted }
+Mongo::insert_many  $target, \@docs, %opts → $inserted_count
+Mongo::update_one   $target, \%filter, \%update, %opts → { matched_count, modified_count, upserted_id }
+Mongo::update_many  $target, \%filter, \%update, %opts → { matched_count, modified_count }
+Mongo::replace_one  $target, \%filter, \%doc, %opts → { matched_count, modified_count }
+Mongo::delete_one   $target, \%filter, %opts → $deleted_count
+Mongo::delete_many  $target, \%filter, %opts → $deleted_count
 ```
 
 ### Metadata + indexes
 
 ```stryke
-Mongo::list_databases    %opts → @{ {name, size_on_disk, empty} }
+Mongo::list_databases    %opts → @names
 Mongo::list_collections  $db, %opts → @names
-Mongo::create_index      $target, \%keys, %opts → { name }    # opts: unique, name
-Mongo::drop_index        $target, $name, %opts → { name, dropped }
-Mongo::indexes           $target, %opts → @{ {name, keys, unique} }
+Mongo::create_index      $target, \%keys, %opts → $index_name
+Mongo::drop_index        $target, $name, %opts → 1 | ""
+Mongo::indexes           $target, %opts → @specs
 Mongo::ping              %opts → 1 | ""
 ```
 
-### Helper plumbing
+### Plumbing
 
 ```stryke
-Mongo::helper_path()    → $abs_path
-Mongo::ensure_built()   → $abs_path
-Mongo::version()        → "stryke-mongo-helper X.Y.Z"
+Mongo::version()        → $version_string       # cdylib's CARGO_PKG_VERSION
 ```
 
 ## [0x04] BSON type encoding
 
-The helper converts BSON ↔ JSON via MongoDB's **relaxed extended JSON**
+The cdylib converts BSON ↔ JSON via MongoDB's **relaxed extended JSON**
 format, so non-JSON types round-trip cleanly:
 
 | BSON | JSON |
@@ -233,7 +231,20 @@ You can pass extended-JSON wrappers back through filters / updates: a
 filter like `{"_id": {"$oid": "65f9…"}}` will be re-parsed to a real
 `ObjectId` before hitting the wire.
 
-## [0x05] Helper protocol
+## [0x05] FFI layer
+
+Each `Mongo::*` wrapper builds a JSON args dict and calls a sibling
+`mongo__*` symbol resolved out of `libstryke_mongo.{dylib,so}`. The
+cdylib is dlopened in-process on first `use Mongo` (via stryke's
+`pkg::commands::try_load_ffi_for` resolver hook) and exposes 18 entry
+points covering version/ping, discovery, find/count/aggregate, write
+paths, and index admin.
+
+Errors come back as a `{error}` JSON payload; the stryke wrapper dies
+with `Mongo::<op>: <reason>`.
+
+<details>
+<summary>v1 wire shape (historical helper binary)</summary>
 
 ```sh
 stryke-mongo-helper find app/users --filter='{"name":"alice"}' --limit=10
@@ -249,6 +260,8 @@ Output:
 * `find-one` → single JSON doc (or `null`)
 * writes / metadata → single JSON summary
 * errors → stderr + non-zero exit
+
+</details>
 
 ## [0x06] Tests
 
@@ -283,18 +296,18 @@ stryke-mongo/
   stryke.toml                      # stryke package manifest
   Cargo.toml                       # Rust helper crate manifest
   Makefile
-  src/main.rs                      # single-file helper
+  src/lib.rs                       # single-file cdylib
   lib/
     Mongo.stk                      # `use Mongo`
-  bin/
-    mongo.stk                      # `mongo` CLI
-    mongo-build.stk
   t/
     test_mongo.stk                 # live round-trip
+    test_stryke_mongo_surface.stk
   examples/
     crud.stk
     aggregate.stk
     index_admin.stk
+    counts.stk
+    discover.stk
   .github/workflows/
     ci.yml                         # mongo:7 service + live round-trip
     release.yml                    # cross-compile + GH release on tag push
@@ -302,7 +315,7 @@ stryke-mongo/
 
 ## [0x09] Roadmap
 
-| v1 (this release) | v2+ |
+| v1 (helper era) | v2+ |
 |---|---|
 | Single-shot CRUD + aggregate + index admin | Change Streams (requires replica set) |
 | Connection per call | Connection pool / persistent serve daemon |
