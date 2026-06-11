@@ -875,4 +875,147 @@ mod tests {
             "DateTime epoch_ms round-trip drifted from input",
         );
     }
+
+    /// Field INSERTION ORDER must survive json → bson::Document → json.
+    /// This is a silent-data-corruption contract, not a cosmetic one:
+    /// `serde_json` is pulled with the `preserve_order` feature (Cargo.toml)
+    /// so `Value::Object` is backed by an `IndexMap`, and `bson::Document`
+    /// is itself order-preserving. If a future Cargo.toml edit drops
+    /// `preserve_order` (or a refactor routes through a `BTreeMap`/`HashMap`
+    /// intermediate), `doc_to_json` output would silently re-sort keys
+    /// alphabetically. Every stryke `Mongo::find` consumer that pattern-
+    /// matches positionally, prints `_id`-first, or diffs documents would
+    /// break with NO version bump and NO error — the worst failure class.
+    ///
+    /// Uses a key set whose insertion order is the REVERSE of alphabetical
+    /// (`z`, `m`, `a`, `_id`) so an accidental sort is unambiguously
+    /// detectable: sorted output would be `_id, a, m, z`, which differs from
+    /// the expected insertion order in every position.
+    #[test]
+    fn doc_to_json_preserves_field_insertion_order_not_sorted() {
+        // Build via json! so the source ordering is explicit and reversed
+        // vs. alphabetical. serde_json with preserve_order keeps this order.
+        let input = json!({"z": 1, "m": 2, "a": 3, "_id": 4});
+        let d = json_to_doc(&input).unwrap();
+
+        // bson::Document iterates in insertion order.
+        let doc_keys: Vec<&str> = d.keys().map(String::as_str).collect();
+        assert_eq!(
+            doc_keys,
+            vec!["z", "m", "a", "_id"],
+            "json_to_doc scrambled field order — a HashMap/BTreeMap crept \
+             into the json→bson path (sorted would be [_id, a, m, z])",
+        );
+
+        // And back out: doc_to_json must NOT re-sort.
+        let back = doc_to_json(&d).unwrap();
+        let out_keys: Vec<&str> = back
+            .as_object()
+            .expect("doc_to_json must yield an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            out_keys,
+            vec!["z", "m", "a", "_id"],
+            "doc_to_json re-ordered fields — `preserve_order` was dropped \
+             from serde_json or a sorting map intermediate was introduced; \
+             stryke find() output silently re-sorts keys",
+        );
+    }
+
+    /// Unicode keys AND values must survive the json → bson → json
+    /// round-trip byte-for-byte. The json↔bson conversion crosses two
+    /// serializers; a regression that truncated on bytes instead of chars
+    /// (or mishandled surrogate pairs / combining marks) would corrupt
+    /// real-world data: non-ASCII collection field names, emoji in user
+    /// content, accented names. None of the existing round-trip tests use
+    /// any non-ASCII codepoint — they're all `"ada"` / `"ny"` ASCII.
+    ///
+    /// Mixes: a CJK key, a combining-mark sequence (e + U+0301 = é as two
+    /// codepoints, the classic byte-vs-char trap), an emoji that is a
+    /// surrogate pair in UTF-16 (4 bytes UTF-8), and a NUL-free control-
+    /// adjacent string. Asserts exact equality both ways.
+    #[test]
+    fn json_to_doc_round_trips_unicode_keys_and_values_byte_equal() {
+        // "名前" = CJK key; value mixes combining é (e + U+0301), emoji,
+        // and a right-to-left Arabic snippet.
+        let combining_e_acute = "e\u{0301}"; // NOT precomposed U+00E9
+        let value = format!("{combining_e_acute}-\u{1F680}-مرحبا");
+        let input = json!({
+            "名前": value,
+            "emoji_key_\u{1F4BE}": "💾",
+            "ascii": "plain",
+        });
+        let d = json_to_doc(&input).unwrap();
+
+        // Key with a 4-byte-UTF-8 codepoint must be retrievable verbatim.
+        assert_eq!(
+            d.get_str("名前").unwrap(),
+            value,
+            "CJK-keyed unicode value corrupted in json→bson",
+        );
+        assert_eq!(d.get_str("emoji_key_\u{1F4BE}").unwrap(), "💾");
+
+        // Full round-trip back to json must be byte-identical to input.
+        let back = doc_to_json(&d).unwrap();
+        assert_eq!(
+            back, input,
+            "unicode round-trip json→bson→json was not byte-equal — a \
+             serializer in the path is truncating on bytes or mangling \
+             surrogate pairs / combining marks",
+        );
+        // Explicitly confirm the combining sequence was NOT silently
+        // normalized to the precomposed form (which would change byte len
+        // and break exact-match queries).
+        assert!(
+            back["名前"].as_str().unwrap().starts_with("e\u{0301}"),
+            "combining-mark sequence was NFC-normalized — exact-match \
+             filters on this value would miss in mongo",
+        );
+    }
+
+    /// Nested arrays-of-documents must convert recursively. Existing
+    /// coverage only round-trips FLAT scalar fields (`json_to_doc_to_json_
+    /// preserves_basic_fields`) — nothing exercises a `Bson::Array` of
+    /// `Bson::Document`, which is the shape of every real mongo doc with an
+    /// embedded subdocument list (e.g. `order.items`, `user.addresses`).
+    ///
+    /// Catches: a refactor that special-cased top-level objects but lost
+    /// recursion into array elements, or that flattened nested docs — both
+    /// would corrupt `Mongo::insert_one` payloads with embedded arrays
+    /// while leaving the flat-field tests green.
+    #[test]
+    fn json_to_doc_round_trips_nested_array_of_documents() {
+        let input = json!({
+            "order": "o-1",
+            "items": [
+                {"sku": "a", "qty": 2},
+                {"sku": "b", "qty": 1, "tags": ["x", "y"]},
+            ],
+            "meta": {"nested": {"deep": true}},
+        });
+        let d = json_to_doc(&input).unwrap();
+
+        // The array element must be a real BSON array of subdocuments,
+        // not a stringified or flattened blob.
+        let items = d.get_array("items").expect("items not a BSON array");
+        assert_eq!(items.len(), 2);
+        match &items[1] {
+            Bson::Document(sub) => {
+                assert_eq!(sub.get_i64("qty").unwrap(), 1);
+                let tags = sub.get_array("tags").expect("tags not array");
+                assert_eq!(tags.len(), 2);
+            }
+            other => panic!("nested item not a document: {other:?}"),
+        }
+
+        // Full recursive round-trip back to json must equal the input.
+        let back = doc_to_json(&d).unwrap();
+        assert_eq!(
+            back, input,
+            "nested array-of-documents round-trip diverged — recursive \
+             json↔bson conversion lost or reshaped embedded subdocuments",
+        );
+    }
 }
