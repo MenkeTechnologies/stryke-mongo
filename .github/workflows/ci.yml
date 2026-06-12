@@ -63,6 +63,70 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --no-fail-fast
 
+  # Build the cdylib, install the package, and run the t/ stryke suite
+  # against an ephemeral mongo service so the live assertions actually
+  # execute. The mongo service has a health check, so it is ready before
+  # the steps run and the test's liveness probe passes (a skipped live
+  # block would silently pass and give fake coverage). This is the only job
+  # that exercises the lib/*.stk wrapper logic (insert/find/update/delete/
+  # aggregate/index/…); cargo test only covers the Rust cdylib.
+  stryke-test:
+    name: Stryke .stk suite
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build cdylib
+        run: cargo build --release --locked
+      - name: Install stryke from latest GitHub release
+        run: |
+          set -euo pipefail
+          TAG=$(gh release view --repo MenkeTechnologies/strykelang \
+              --json tagName --jq '.tagName')
+          ASSET="stryke-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
+          gh release download "${TAG}" --repo MenkeTechnologies/strykelang \
+              --pattern "${ASSET}" --output /tmp/stryke.tar.gz
+          mkdir -p "${HOME}/.local/bin"
+          tar -C "${HOME}/.local/bin" -xzf /tmp/stryke.tar.gz
+          chmod +x "${HOME}/.local/bin"/{stryke,st,s} 2>/dev/null || true
+          echo "${HOME}/.local/bin" >> "$GITHUB_PATH"
+          stryke --version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Syntax-check every .stk file
+        run: |
+          set -uo pipefail
+          fail=0
+          for f in lib/*.stk t/*.stk examples/*.stk; do
+              [[ -f "$f" ]] || continue
+              out=$(stryke -c "$f" 2>&1)
+              if [[ "$out" == *"syntax OK"* ]]; then
+                  echo "OK   $f"
+              else
+                  echo "FAIL $f"
+                  printf '%s\n' "$out" | head -5 | sed 's/^/        /'
+                  fail=1
+              fi
+          done
+          exit $fail
+      - name: Install package + run t/ suite
+        run: |
+          s pkg install -g .
+          s test t/
+        env:
+          MONGODB_URI: mongodb://127.0.0.1:27017
+
   doc:
     name: Doc
     runs-on: ubuntu-latest
