@@ -23,7 +23,7 @@ Mongo::insert_many $t, [
 
 p "count: " . Mongo::count($t)
 
-val @over28 = Mongo::find $t, filter => { age => { '$gt' => 28 } }, sort => { age => -1 }
+var @over28 = Mongo::find($t, filter => { age => { '$gt' => 28 } }, sort => { age => -1 })
 p "over-28:"
 for val $u (@over28) {
     p "  $u->{name} (age $u->{age})"

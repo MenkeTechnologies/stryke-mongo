@@ -22,7 +22,7 @@ Mongo::insert_many $t, [
 ]
 
 # Group by customer, sum totals, sort descending.
-val @top = Mongo::aggregate $t, [
+var @top = Mongo::aggregate $t, [
     { '$group' => { _id => '$customer',
                     total => { '$sum' => '$total' },
                     items => { '$sum' => '$qty' } } },

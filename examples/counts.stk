@@ -17,8 +17,7 @@ unless ($alive) {
     exit 0
 }
 
-val $dbs = Mongo::list_databases()
-val @names = @{ $dbs->{databases} // [] }
+var @names = Mongo::list_databases()
 p "databases: " . scalar(@names)
 p ""
 
@@ -27,9 +26,8 @@ for val $db (@names) {
     # Skip the admin metadata dbs that always exist and aren't interesting.
     next if $db eq "admin" || $db eq "local" || $db eq "config"
 
-    val $colls = eval { Mongo::list_collections(db => $db) }
+    var @cs = eval { Mongo::list_collections($db) }
     next if $@
-    val @cs = @{ $colls->{collections} // [] }
     next if scalar(@cs) == 0
 
     p "$db (" . scalar(@cs) . " collection(s)):"
