@@ -179,3 +179,36 @@ fn Mongo::indexes ($target, %opts) {
     @{ $o->{indexes} }
 }
 
+
+# ── convenience composites ──────────────────────────────────────────
+#
+# Pure-stryke helpers over the count / find_one / list_collections
+# primitives above — no new FFI.
+
+## True if at least one document in $target ("db.coll") matches $filter.
+## A faster, intention-revealing wrapper over `count`.
+## NB: the connection `uri` is forwarded as an explicit inline pair, not
+## by splatting the %opts hash — stryke drops a splatted hash variable's
+## keys when the callee is a store-loaded package fn (inline pairs are
+## fine). `uri` is the only connection opt the cdylib reads.
+fn Mongo::exists ($target, $filter, %opts) {
+    Mongo::count($target, filter => $filter, uri => $opts{uri}) > 0 ? 1 : 0
+}
+
+## The value of a single $field from the first document in $target
+## matching $filter, or undef when nothing matches (or the field is
+## absent). Projects to just $field so only that column crosses the wire.
+fn Mongo::find_value ($target, $filter, $field, %opts) {
+    val $doc = Mongo::find_one($target,
+        filter => $filter, projection => { $field => 1 }, uri => $opts{uri})
+    defined($doc) ? $doc->{$field} : undef
+}
+
+## True if collection $coll exists in database $db. Composes
+## `list_collections` — no separate FFI call shape.
+fn Mongo::collection_exists ($db, $coll, %opts) {
+    for val $c (Mongo::list_collections($db, uri => $opts{uri})) {
+        return 1 if $c eq $coll
+    }
+    0
+}

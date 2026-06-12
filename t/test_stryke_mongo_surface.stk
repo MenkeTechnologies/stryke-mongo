@@ -36,5 +36,8 @@ assert_ok exists &Mongo::delete_many, "Mongo::delete_many exists"
 assert_ok exists &Mongo::create_index, "Mongo::create_index exists"
 assert_ok exists &Mongo::drop_index, "Mongo::drop_index exists"
 assert_ok exists &Mongo::indexes, "Mongo::indexes exists"
+assert_ok exists &Mongo::exists, "Mongo::exists exists"
+assert_ok exists &Mongo::find_value, "Mongo::find_value exists"
+assert_ok exists &Mongo::collection_exists, "Mongo::collection_exists exists"
 
 test_run

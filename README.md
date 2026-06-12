@@ -176,6 +176,17 @@ Mongo::count        $target, %opts → $n
 Mongo::aggregate    $target, \@pipeline, %opts → @docs
 ```
 
+### Convenience composites
+
+Pure-stryke helpers over `count` / `find_one` / `list_collections` — no
+extra round trips beyond the primitive they wrap.
+
+```stryke
+Mongo::exists            $target, $filter, %opts → 1 | 0      # count($filter) > 0
+Mongo::find_value        $target, $filter, $field, %opts → $value | undef   # one field, projected
+Mongo::collection_exists $db, $coll, %opts → 1 | 0           # $coll in list_collections($db)
+```
+
 ### Write paths
 
 ```stryke
