@@ -20,7 +20,7 @@ val $alive = eval { Mongo::ping(%conn) }
 
 if ($alive) {
     val $coll = "stryke_test_$$"
-    val $tgt  = "stryke_test/$coll"
+    val $tgt  = "stryke_test.$coll"
 
     # 1. insert_one
     val $ins1 = Mongo::insert_one($tgt, { name => "alice", age => 30, role => "admin" }, %conn)
@@ -32,7 +32,7 @@ if ($alive) {
          { name => "charlie", age => 35 },
          { name => "dana", age => 28 }],
         %conn)
-    assert_eq $ins2->{inserted}, 3, "insert_many: inserted=3"
+    assert_eq $ins2, 3, "insert_many: inserted=3"
 
     # 3. count
     assert_eq Mongo::count($tgt, %conn), 4, "count after insert: 4"
@@ -56,8 +56,8 @@ if ($alive) {
                                 { name => "alice" },
                                 { '$set' => { role => "superadmin", level => 99 } },
                                 %conn)
-    assert_eq $upd->{matched}, 1, "update_one: matched=1"
-    assert_eq $upd->{modified}, 1, "update_one: modified=1"
+    assert_eq $upd->{matched_count}, 1, "update_one: matched=1"
+    assert_eq $upd->{modified_count}, 1, "update_one: modified=1"
 
     # 7. aggregate (group by role)
     val @grouped = Mongo::aggregate($tgt,
@@ -67,11 +67,11 @@ if ($alive) {
 
     # 8. create_index
     val $idx = Mongo::create_index($tgt, { name => 1 }, unique => 1, %conn)
-    assert_eq $idx->{name}, "name_1", "create_index: returns index name name_1"
+    assert_eq $idx, "name_1", "create_index: returns index name name_1"
 
     # 9. delete_many
     val $del = Mongo::delete_many($tgt, {}, %conn)
-    assert_eq $del->{deleted}, 4, "delete_many: deleted=4"
+    assert_eq $del, 4, "delete_many: deleted=4"
 
     # cleanup
     eval { Mongo::drop_index($tgt, "name_1", %conn) }
