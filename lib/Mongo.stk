@@ -125,25 +125,61 @@ fn Mongo::insert_many ($target, $docs, %opts) {
     Mongo::_decode("insert_many", mongo__insert_many(to_json($r)))->{inserted_count}
 }
 
-## Update first matching doc; returns { matched_count, modified_count, upserted_id }.
+## Update first matching doc; returns { matched_count, modified_count,
+## upserted_id }. opts: upsert (bool), array_filters (arrayref).
 fn Mongo::update_one ($target, $filter, $update, %opts) {
     val $r = Mongo::_req(
-        { target => $target, filter => $filter, update => $update }, \%opts)
+        { target => $target, filter => $filter, update => $update,
+          upsert => ($opts{upsert} ? \1 : \0), array_filters => $opts{array_filters} }, \%opts)
     Mongo::_decode("update_one", mongo__update_one(to_json($r)))
 }
 
-## Update all matching docs; returns { matched_count, modified_count }.
+## Update all matching docs; returns { matched_count, modified_count,
+## upserted_id }. opts: upsert (bool), array_filters (arrayref).
 fn Mongo::update_many ($target, $filter, $update, %opts) {
     val $r = Mongo::_req(
-        { target => $target, filter => $filter, update => $update }, \%opts)
+        { target => $target, filter => $filter, update => $update,
+          upsert => ($opts{upsert} ? \1 : \0), array_filters => $opts{array_filters} }, \%opts)
     Mongo::_decode("update_many", mongo__update_many(to_json($r)))
 }
 
-## Replace first matching doc; returns { matched_count, modified_count }.
+## Replace first matching doc; returns { matched_count, modified_count,
+## upserted_id }. opts: upsert (bool).
 fn Mongo::replace_one ($target, $filter, $doc, %opts) {
     val $r = Mongo::_req(
-        { target => $target, filter => $filter, doc => $doc }, \%opts)
+        { target => $target, filter => $filter, doc => $doc,
+          upsert => ($opts{upsert} ? \1 : \0) }, \%opts)
     Mongo::_decode("replace_one", mongo__replace_one(to_json($r)))
+}
+
+# ── atomic findAndModify ────────────────────────────────────────────
+
+## Atomically update + return a doc. opts: return ("before"|"after"),
+## upsert, sort, projection, array_filters. Returns the doc (or undef).
+fn Mongo::find_one_and_update ($target, $filter, $update, %opts) {
+    val $r = Mongo::_req(
+        { target => $target, filter => $filter, update => $update,
+          return => $opts{return}, upsert => ($opts{upsert} ? \1 : \0),
+          sort => $opts{sort}, projection => $opts{projection},
+          array_filters => $opts{array_filters} }, \%opts)
+    Mongo::_decode("find_one_and_update", mongo__find_one_and_update(to_json($r)))->{doc}
+}
+
+## Atomically replace + return a doc. opts: return, upsert, sort, projection.
+fn Mongo::find_one_and_replace ($target, $filter, $doc, %opts) {
+    val $r = Mongo::_req(
+        { target => $target, filter => $filter, doc => $doc,
+          return => $opts{return}, upsert => ($opts{upsert} ? \1 : \0),
+          sort => $opts{sort}, projection => $opts{projection} }, \%opts)
+    Mongo::_decode("find_one_and_replace", mongo__find_one_and_replace(to_json($r)))->{doc}
+}
+
+## Atomically delete + return the removed doc. opts: sort, projection.
+fn Mongo::find_one_and_delete ($target, $filter, %opts) {
+    val $r = Mongo::_req(
+        { target => $target, filter => $filter,
+          sort => $opts{sort}, projection => $opts{projection} }, \%opts)
+    Mongo::_decode("find_one_and_delete", mongo__find_one_and_delete(to_json($r)))->{doc}
 }
 
 ## Delete first matching doc; returns deleted_count.
@@ -177,6 +213,39 @@ fn Mongo::indexes ($target, %opts) {
     val $r = Mongo::_req({ target => $target }, \%opts)
     val $o = Mongo::_decode("indexes", mongo__indexes(to_json($r)))
     @{ $o->{indexes} }
+}
+
+# ── distinct / counts / collection admin / run_command ──────────────
+
+## Distinct values of $field across docs matching $filter. Returns a list.
+fn Mongo::distinct ($target, $field, %opts) {
+    val $r = Mongo::_req({ target => $target, field => $field, filter => $opts{filter} }, \%opts)
+    val $o = Mongo::_decode("distinct", mongo__distinct(to_json($r)))
+    @{ $o->{values} }
+}
+
+## Fast metadata-based document estimate for $target (no filter).
+fn Mongo::estimated_count ($target, %opts) {
+    val $r = Mongo::_req({ target => $target }, \%opts)
+    Mongo::_decode("estimated_count", mongo__estimated_count(to_json($r)))->{value}
+}
+
+## Create collection $coll in database $db.
+fn Mongo::create_collection ($db, $coll, %opts) {
+    val $r = Mongo::_req({ db => $db, name => $coll }, \%opts)
+    Mongo::_decode("create_collection", mongo__create_collection(to_json($r)))
+}
+
+## Drop collection $target ("db.coll").
+fn Mongo::drop_collection ($target, %opts) {
+    val $r = Mongo::_req({ target => $target }, \%opts)
+    Mongo::_decode("drop_collection", mongo__drop_collection(to_json($r)))
+}
+
+## Run an arbitrary database command against $db; returns the result doc.
+fn Mongo::run_command ($db, $command, %opts) {
+    val $r = Mongo::_req({ db => $db, command => $command }, \%opts)
+    Mongo::_decode("run_command", mongo__run_command(to_json($r)))->{result}
 }
 
 

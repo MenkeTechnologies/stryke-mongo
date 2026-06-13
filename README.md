@@ -193,20 +193,44 @@ Mongo::collection_exists $db, $coll, %opts → 1 | 0           # $coll in list_c
 Mongo::insert_one   $target, \%doc, %opts → { inserted_id }
 Mongo::insert_many  $target, \@docs, %opts → $inserted_count
 Mongo::update_one   $target, \%filter, \%update, %opts → { matched_count, modified_count, upserted_id }
-Mongo::update_many  $target, \%filter, \%update, %opts → { matched_count, modified_count }
-Mongo::replace_one  $target, \%filter, \%doc, %opts → { matched_count, modified_count }
+Mongo::update_many  $target, \%filter, \%update, %opts → { matched_count, modified_count, upserted_id }
+Mongo::replace_one  $target, \%filter, \%doc, %opts → { matched_count, modified_count, upserted_id }
 Mongo::delete_one   $target, \%filter, %opts → $deleted_count
 Mongo::delete_many  $target, \%filter, %opts → $deleted_count
 ```
 
-### Metadata + indexes
+Write `%opts`: `upsert` (insert when no match), `array_filters` (for
+positional `$[<id>]` updates).
+
+### Atomic findAndModify
+
+```stryke
+Mongo::find_one_and_update   $target, \%filter, \%update, %opts → \%doc | undef
+Mongo::find_one_and_replace  $target, \%filter, \%doc, %opts → \%doc | undef
+Mongo::find_one_and_delete   $target, \%filter, %opts → \%doc | undef
+```
+
+`%opts`: `return` (`"before"` | `"after"`), `upsert`, `sort`, `projection`,
+`array_filters` (update only).
+
+### Aggregation helpers
+
+```stryke
+Mongo::distinct          $target, $field, %opts → @values     # opts: filter
+Mongo::estimated_count   $target, %opts → $n                  # fast metadata count
+```
+
+### Metadata + admin
 
 ```stryke
 Mongo::list_databases    %opts → @names
 Mongo::list_collections  $db, %opts → @names
+Mongo::create_collection $db, $coll, %opts → { ok, created }
+Mongo::drop_collection   $target, %opts → { ok, dropped }
 Mongo::create_index      $target, \%keys, %opts → $index_name
 Mongo::drop_index        $target, $name, %opts → 1 | ""
 Mongo::indexes           $target, %opts → @specs
+Mongo::run_command       $db, \%command, %opts → \%result     # arbitrary db command
 Mongo::ping              %opts → 1 | ""
 ```
 
@@ -326,13 +350,15 @@ stryke-mongo/
 
 ## [0x09] Roadmap
 
-| v1 (helper era) | v2+ |
+Shipped: CRUD + aggregate + index admin, atomic findAndModify (update/replace/
+delete), distinct, estimated count, collection create/drop, arbitrary
+`run_command`, and `upsert` / `array_filters` write options.
+
+| Open | Later |
 |---|---|
-| Single-shot CRUD + aggregate + index admin | Change Streams (requires replica set) |
-| Connection per call | Connection pool / persistent serve daemon |
-| Relaxed extended JSON | Canonical extended JSON option for `$numberLong` precision |
-| BSON filters / updates / pipelines | GridFS read/write |
-| `mongodb` 3.x async | Transactions (replica set required) |
+| Change Streams (requires replica set) | GridFS read/write |
+| Multi-doc transactions (replica set required) | Canonical extended JSON for `$numberLong` precision |
+| `bulk_write` (mixed ordered/unordered) | Connection pool / persistent serve daemon |
 
 ## [0xFF] License
 

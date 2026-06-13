@@ -29,6 +29,14 @@ exports = [
     "mongo__create_index",
     "mongo__drop_index",
     "mongo__indexes",
+    "mongo__find_one_and_update",
+    "mongo__find_one_and_replace",
+    "mongo__find_one_and_delete",
+    "mongo__distinct",
+    "mongo__estimated_count",
+    "mongo__create_collection",
+    "mongo__drop_collection",
+    "mongo__run_command",
 ]
 
 [scripts]

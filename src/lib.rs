@@ -23,7 +23,9 @@ use anyhow::{anyhow, Result};
 use bson::{doc, Bson, Document};
 use futures_util::TryStreamExt;
 use mongodb::options::{
-    AggregateOptions, ClientOptions, CountOptions, FindOneOptions, FindOptions,
+    AggregateOptions, ClientOptions, CountOptions, FindOneAndDeleteOptions,
+    FindOneAndReplaceOptions, FindOneAndUpdateOptions, FindOneOptions, FindOptions, ReplaceOptions,
+    ReturnDocument, UpdateOptions,
 };
 use mongodb::Client;
 use once_cell::sync::OnceCell;
@@ -255,13 +257,40 @@ async fn op_insert_many(opts: Value) -> Result<Value> {
     Ok(json!({"inserted_count": r.inserted_ids.len() as i64}))
 }
 
+/// Optional doc field → `Document` (None when absent/null).
+fn opt_doc(opts: &Value, key: &str) -> Option<Document> {
+    match opts.get(key) {
+        Some(v) if !v.is_null() => json_to_doc(v).ok(),
+        _ => None,
+    }
+}
+
+/// `array_filters` opt → Vec<Document> when present.
+fn opt_array_filters(opts: &Value) -> Option<Vec<Document>> {
+    opts.get("array_filters")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|d| json_to_doc(d).ok()).collect())
+}
+
+/// `return` opt ("before"|"after") → ReturnDocument.
+fn return_document(opts: &Value) -> Option<ReturnDocument> {
+    match opts.get("return").and_then(Value::as_str) {
+        Some("before") => Some(ReturnDocument::Before),
+        Some("after") => Some(ReturnDocument::After),
+        _ => None,
+    }
+}
+
 async fn op_update_one(opts: Value) -> Result<Value> {
     let c = get_client(&opts).await?;
     let (db, coll) = parse_target(&opts, None)?;
     let filter = json_to_doc(&opts["filter"])?;
     let update = json_to_doc(&opts["update"])?;
+    let mut uo = UpdateOptions::default();
+    uo.upsert = opts["upsert"].as_bool();
+    uo.array_filters = opt_array_filters(&opts);
     let coll = c.database(&db).collection::<Document>(&coll);
-    let r = coll.update_one(filter, update).await?;
+    let r = coll.update_one(filter, update).with_options(uo).await?;
     Ok(json!({
         "matched_count": r.matched_count as i64,
         "modified_count": r.modified_count as i64,
@@ -274,11 +303,15 @@ async fn op_update_many(opts: Value) -> Result<Value> {
     let (db, coll) = parse_target(&opts, None)?;
     let filter = json_to_doc(&opts["filter"])?;
     let update = json_to_doc(&opts["update"])?;
+    let mut uo = UpdateOptions::default();
+    uo.upsert = opts["upsert"].as_bool();
+    uo.array_filters = opt_array_filters(&opts);
     let coll = c.database(&db).collection::<Document>(&coll);
-    let r = coll.update_many(filter, update).await?;
+    let r = coll.update_many(filter, update).with_options(uo).await?;
     Ok(json!({
         "matched_count": r.matched_count as i64,
         "modified_count": r.modified_count as i64,
+        "upserted_id": serde_json::to_value(r.upserted_id)?,
     }))
 }
 
@@ -287,12 +320,124 @@ async fn op_replace_one(opts: Value) -> Result<Value> {
     let (db, coll) = parse_target(&opts, None)?;
     let filter = json_to_doc(&opts["filter"])?;
     let replacement = json_to_doc(&opts["doc"])?;
+    let mut ro = ReplaceOptions::default();
+    ro.upsert = opts["upsert"].as_bool();
     let coll = c.database(&db).collection::<Document>(&coll);
-    let r = coll.replace_one(filter, replacement).await?;
+    let r = coll
+        .replace_one(filter, replacement)
+        .with_options(ro)
+        .await?;
     Ok(json!({
         "matched_count": r.matched_count as i64,
         "modified_count": r.modified_count as i64,
+        "upserted_id": serde_json::to_value(r.upserted_id)?,
     }))
+}
+
+// ── findAndModify family ─────────────────────────────────────────────────────
+
+async fn op_find_one_and_update(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let filter = json_to_doc(&opts["filter"])?;
+    let update = json_to_doc(&opts["update"])?;
+    let mut o = FindOneAndUpdateOptions::default();
+    o.upsert = opts["upsert"].as_bool();
+    o.return_document = return_document(&opts);
+    o.sort = opt_doc(&opts, "sort");
+    o.projection = opt_doc(&opts, "projection");
+    o.array_filters = opt_array_filters(&opts);
+    let coll = c.database(&db).collection::<Document>(&coll);
+    let r = coll
+        .find_one_and_update(filter, update)
+        .with_options(o)
+        .await?;
+    Ok(json!({"doc": match r { Some(d) => doc_to_json(&d)?, None => Value::Null }}))
+}
+
+async fn op_find_one_and_replace(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let filter = json_to_doc(&opts["filter"])?;
+    let replacement = json_to_doc(&opts["doc"])?;
+    let mut o = FindOneAndReplaceOptions::default();
+    o.upsert = opts["upsert"].as_bool();
+    o.return_document = return_document(&opts);
+    o.sort = opt_doc(&opts, "sort");
+    o.projection = opt_doc(&opts, "projection");
+    let coll = c.database(&db).collection::<Document>(&coll);
+    let r = coll
+        .find_one_and_replace(filter, replacement)
+        .with_options(o)
+        .await?;
+    Ok(json!({"doc": match r { Some(d) => doc_to_json(&d)?, None => Value::Null }}))
+}
+
+async fn op_find_one_and_delete(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let filter = json_to_doc(&opts["filter"])?;
+    let mut o = FindOneAndDeleteOptions::default();
+    o.sort = opt_doc(&opts, "sort");
+    o.projection = opt_doc(&opts, "projection");
+    let coll = c.database(&db).collection::<Document>(&coll);
+    let r = coll.find_one_and_delete(filter).with_options(o).await?;
+    Ok(json!({"doc": match r { Some(d) => doc_to_json(&d)?, None => Value::Null }}))
+}
+
+// ── distinct / estimated count / admin / run_command ─────────────────────────
+
+async fn op_distinct(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let field = opts["field"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing field"))?
+        .to_string();
+    let filter = opt_doc(&opts, "filter").unwrap_or_default();
+    let coll = c.database(&db).collection::<Document>(&coll);
+    let values = coll.distinct(&field, filter).await?;
+    let json_values: Vec<Value> = values
+        .iter()
+        .map(|b| serde_json::to_value(b).unwrap_or(Value::Null))
+        .collect();
+    Ok(json!({"values": json_values}))
+}
+
+async fn op_estimated_count(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let coll = c.database(&db).collection::<Document>(&coll);
+    let n = coll.estimated_document_count().await?;
+    Ok(json!({"value": n as i64}))
+}
+
+async fn op_create_collection(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let db = opts["db"].as_str().ok_or_else(|| anyhow!("missing db"))?;
+    let name = opts["name"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing name"))?;
+    c.database(db).create_collection(name).await?;
+    Ok(json!({"ok": true, "created": name}))
+}
+
+async fn op_drop_collection(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    c.database(&db).collection::<Document>(&coll).drop().await?;
+    Ok(json!({"ok": true, "dropped": coll}))
+}
+
+async fn op_run_command(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let db = opts["db"].as_str().ok_or_else(|| anyhow!("missing db"))?;
+    let command = json_to_doc(&opts["command"])?;
+    if command.is_empty() {
+        return Err(anyhow!("missing command (a non-empty command document)"));
+    }
+    let r = c.database(db).run_command(command).await?;
+    Ok(json!({"result": doc_to_json(&r)?}))
 }
 
 async fn op_delete_one(opts: Value) -> Result<Value> {
@@ -481,6 +626,46 @@ pub extern "C" fn mongo__drop_index(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__indexes(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_indexes)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__find_one_and_update(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_find_one_and_update)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__find_one_and_replace(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_find_one_and_replace)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__find_one_and_delete(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_find_one_and_delete)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__distinct(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_distinct)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__estimated_count(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_estimated_count)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__create_collection(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_create_collection)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__drop_collection(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_drop_collection)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__run_command(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_run_command)
 }
 
 #[cfg(test)]
@@ -1017,5 +1202,45 @@ mod tests {
             "nested array-of-documents round-trip diverged — recursive \
              json↔bson conversion lost or reshaped embedded subdocuments",
         );
+    }
+
+    // ── new-surface option helpers ───────────────────────────────────────────
+
+    #[test]
+    fn return_document_maps_before_after_only() {
+        assert!(matches!(
+            return_document(&json!({"return": "after"})),
+            Some(ReturnDocument::After)
+        ));
+        assert!(matches!(
+            return_document(&json!({"return": "before"})),
+            Some(ReturnDocument::Before)
+        ));
+        // Absent or bogus → None (driver default).
+        assert!(return_document(&json!({})).is_none());
+        assert!(return_document(&json!({"return": "sideways"})).is_none());
+    }
+
+    #[test]
+    fn opt_array_filters_parses_array_of_docs() {
+        let af = opt_array_filters(&json!({"array_filters": [{"x.y": {"$gt": 3}}]}))
+            .expect("filters built");
+        assert_eq!(af.len(), 1);
+        assert!(af[0].contains_key("x.y"));
+        // Absent → None.
+        assert!(opt_array_filters(&json!({})).is_none());
+    }
+
+    #[test]
+    fn opt_doc_returns_none_for_absent_or_null() {
+        assert!(opt_doc(&json!({}), "sort").is_none());
+        assert!(opt_doc(&json!({"sort": null}), "sort").is_none());
+        let d = opt_doc(&json!({"sort": {"ts": -1}}), "sort").expect("sort doc");
+        // serde_json → bson may pick i32 or i64 for the literal; accept either.
+        let ts = d
+            .get("ts")
+            .and_then(Bson::as_i64)
+            .or_else(|| d.get_i32("ts").ok().map(i64::from));
+        assert_eq!(ts, Some(-1));
     }
 }
