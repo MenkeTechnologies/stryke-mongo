@@ -53,4 +53,7 @@ assert_ok exists &Mongo::rename_collection, "Mongo::rename_collection exists"
 assert_ok exists &Mongo::coll_stats, "Mongo::coll_stats exists"
 assert_ok exists &Mongo::db_stats, "Mongo::db_stats exists"
 
+assert_ok exists &Mongo::explain, "Mongo::explain exists"
+assert_ok exists &Mongo::server_status, "Mongo::server_status exists"
+
 test_run

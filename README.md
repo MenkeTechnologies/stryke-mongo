@@ -234,6 +234,8 @@ Mongo::run_command       $db, \%command, %opts → \%result     # arbitrary db c
 Mongo::rename_collection $target, $to, %opts → { ok, renamed } # opt: drop_target
 Mongo::coll_stats        $target, %opts → \%stats             # collStats
 Mongo::db_stats          $db, %opts → \%stats                 # dbStats
+Mongo::explain           $target, %opts → \%plan              # opts: filter | pipeline, verbosity
+Mongo::server_status     %opts → \%status                     # opts: db (default admin)
 Mongo::ping              %opts → 1 | ""
 ```
 

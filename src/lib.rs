@@ -473,6 +473,33 @@ async fn op_db_stats(opts: Value) -> Result<Value> {
     Ok(json!({"stats": doc_to_json(&r)?}))
 }
 
+async fn op_explain(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let verbosity = opts["verbosity"].as_str().unwrap_or("queryPlanner");
+    // Explain a find (default) or an aggregate when a pipeline is supplied.
+    let inner = if let Some(pipeline) = opts.get("pipeline").filter(|p| p.is_array()) {
+        json!({ "aggregate": coll, "pipeline": pipeline, "cursor": {} })
+    } else {
+        let filter = match opts.get("filter") {
+            Some(v) if !v.is_null() => v.clone(),
+            _ => json!({}),
+        };
+        json!({ "find": coll, "filter": filter })
+    };
+    let cmd = json_to_doc(&json!({ "explain": inner, "verbosity": verbosity }))?;
+    let r = c.database(&db).run_command(cmd).await?;
+    Ok(json!({ "explain": doc_to_json(&r)? }))
+}
+
+async fn op_server_status(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let db = opts["db"].as_str().unwrap_or("admin");
+    let cmd = json_to_doc(&json!({"serverStatus": 1}))?;
+    let r = c.database(db).run_command(cmd).await?;
+    Ok(json!({ "status": doc_to_json(&r)? }))
+}
+
 async fn op_delete_one(opts: Value) -> Result<Value> {
     let c = get_client(&opts).await?;
     let (db, coll) = parse_target(&opts, None)?;
@@ -714,6 +741,16 @@ pub extern "C" fn mongo__coll_stats(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__db_stats(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_db_stats)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__explain(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_explain)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__server_status(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_server_status)
 }
 
 #[cfg(test)]

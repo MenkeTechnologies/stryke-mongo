@@ -40,6 +40,8 @@ exports = [
     "mongo__rename_collection",
     "mongo__coll_stats",
     "mongo__db_stats",
+    "mongo__explain",
+    "mongo__server_status",
 ]
 
 [scripts]

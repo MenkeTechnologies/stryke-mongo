@@ -303,3 +303,20 @@ fn Mongo::db_stats ($db, %opts) {
     val $r = Mongo::_req({ db => $db }, \%opts)
     Mongo::_decode("db_stats", mongo__db_stats(to_json($r)))->{stats}
 }
+
+## Explain a query on $target ("db.coll"). opts: filter (find, default) OR
+## pipeline (aggregate), verbosity (queryPlanner|executionStats|allPlansExecution).
+fn Mongo::explain ($target, %opts) {
+    val $r = Mongo::_req(
+        { target => $target, filter => $opts{filter}, pipeline => $opts{pipeline},
+          verbosity => ($opts{verbosity} // "queryPlanner") },
+        \%opts
+    )
+    Mongo::_decode("explain", mongo__explain(to_json($r)))->{explain}
+}
+
+## serverStatus for $db (default "admin") — uptime, connections, opcounters, mem.
+fn Mongo::server_status (%opts) {
+    val $r = Mongo::_req({ db => ($opts{db} // "admin") }, \%opts)
+    Mongo::_decode("server_status", mongo__server_status(to_json($r)))->{status}
+}
