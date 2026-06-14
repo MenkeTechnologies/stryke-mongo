@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="description" content="stryke-mongo — MONGODB CLIENT FOR STRYKE // CRUD + AGGREGATION + INDEX ADMIN. MongoDB client for stryke. CRUD, aggregation, index admin against any MongoDB 5.0+ standalone, replica set, or sharded cluster. Opt-in package.">
+  <meta name="description" content="stryke-mongo — MONGODB CLIENT FOR STRYKE // CRUD + AGGREGATION + INDEX ADMIN. MongoDB client for stryke. CRUD, aggregation, index admin against any MongoDB 5.0+ standalone, replica set, or sharded cluster. Opt-in package — the mongodb driver ships as a Rust cdylib that stryke dlopens in-process on first `use Mongo`.">
   <title>stryke-mongo — Documentation</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -86,7 +86,7 @@
             <span class="sep">/</span>
             <a href="https://github.com/MenkeTechnologies/MenkeTechnologiesMeta" target="_blank" rel="noopener noreferrer">Meta</a>
           </nav>
-          <p class="docs-build-line">stryke package · CLI launcher <code>mongo</code> · Rust helper <code>stryke-mongo-helper</code> · opt-in (kept out of stryke core)</p>
+          <p class="docs-build-line">stryke package · cdylib <code>libstryke_mongo.{dylib,so}</code> · dlopen'd in-process on <code>use Mongo</code> · opt-in (kept out of stryke core)</p>
         </div>
         <div class="tutorial-toolbar">
           <button type="button" class="btn btn-secondary" id="btnTheme" title="Toggle light/dark">Theme</button>
@@ -112,53 +112,53 @@
 
       <section class="tutorial-section">
         <h2>Install</h2>
-<pre># build the helper binary, install as a stryke package
+<pre># from a release (no rustc on the consumer machine)
+s pkg install -g github.com/MenkeTechnologies/stryke-mongo
+
+# from a local checkout
 cd ~/projects/stryke-mongo
-cargo build --release
-s pkg install -g .
+cargo build --release            # produces target/release/libstryke_mongo.{dylib,so}
+s pkg install -g .               # cdylib lands in ~/.stryke/store/mongo@&lt;version&gt;/
 
 # one-liner
-make install
-
-# verify
-mongo --help</pre>
-        <p>After install, <code>mongo --help</code> works from anywhere on PATH (assuming <code>~/.stryke/bin/</code> is on PATH). The stryke library is auto-discoverable to any project that depends on the package via <code>[deps] mongo = { path = "..." }</code> or, when published, by name.</p>
+make install</pre>
+        <p>The cdylib is dlopened in-process on first <code>use Mongo</code> &mdash; no helper-binary fork per call. Any stryke script that declares <code>use Mongo</code> resolves the package automatically.</p>
       </section>
 
       <section class="tutorial-section">
-        <h2>CLI: <code>mongo</code></h2>
+        <h2>Quick start: <code>use Mongo</code></h2>
         <table class="example-tbl">
           <tbody>
-            <tr><td>find documents</td><td><code>mongo find users --filter '{"active":true}'</code></td></tr>
-            <tr><td>insert NDJSON pipe</td><td><code>cat events.ndjson | mongo insert events</code></td></tr>
-            <tr><td>aggregation pipeline</td><td><code>mongo agg orders '[{"$match":{"status":"new"}},{"$group":{"_id":"$user","n":{"$sum":1}}}]'</code></td></tr>
-            <tr><td>create an index</td><td><code>mongo index create users '{"email":1}' --unique</code></td></tr>
-            <tr><td>list collections</td><td><code>mongo collections list</code></td></tr>
+            <tr><td>insert one</td><td><code>my $r = Mongo::insert_one "app/users", { name =&gt; "alice", age =&gt; 30 }</code></td></tr>
+            <tr><td>count</td><td><code>p Mongo::count "app/users"</code></td></tr>
+            <tr><td>find with filter + sort</td><td><code>my @over30 = Mongo::find "app/users", filter =&gt; { age =&gt; { '$gt' =&gt; 30 } }, sort =&gt; { age =&gt; -1 }, limit =&gt; 100</code></td></tr>
+            <tr><td>update one</td><td><code>Mongo::update_one "app/users", { name =&gt; "alice" }, { '$set' =&gt; { role =&gt; "superadmin" } }</code></td></tr>
+            <tr><td>aggregation pipeline</td><td><code>my @top = Mongo::aggregate "app/orders", [ { '$match' =&gt; { status =&gt; "paid" } }, { '$group' =&gt; { _id =&gt; '$customer', total =&gt; { '$sum' =&gt; '$amount' } } } ]</code></td></tr>
+            <tr><td>create an index</td><td><code>my $idx = Mongo::create_index "app/users", { email =&gt; 1 }</code></td></tr>
+            <tr><td>discovery</td><td><code>my @colls = Mongo::list_collections "app"</code></td></tr>
           </tbody>
         </table>
-        <p>The full flag matrix lives in the <a href="https://github.com/MenkeTechnologies/stryke-mongo#0x03-cli-mongo">README "CLI" section</a>.</p>
+        <p>The full API lives in the <a href="https://github.com/MenkeTechnologies/stryke-mongo#0x03-api-reference">README "API reference" section</a>.</p>
       </section>
 
       <section class="tutorial-section">
         <h2>Why a package, not a builtin</h2>
-        <p>Official <code>mongodb</code> Rust crate. Designed for piping documents in/out as NDJSON to feed other stryke or shell tools.</p>
-        <p>The stryke side is a thin NDJSON-pipe wrapper; the heavy code lives in the <code>stryke-mongo-helper</code> sidecar binary and is loaded on demand. Core stryke is never linked against this package's deps.</p>
+        <p>The official <code>mongodb</code> Rust crate pulls in tokio, rustls, a DNS resolver, and the BSON stack. Ships once as an opt-in package.</p>
+        <p>The stryke side is a thin <code>.stk</code> wrapper that calls <code>mongo__*</code> FFI symbols on the cdylib; the heavy code lives in <code>libstryke_mongo.{dylib,so}</code>, dlopened in-process on first <code>use Mongo</code>. Core stryke is never linked against this package's deps.</p>
       </section>
 
       <section class="tutorial-section">
-        <h2>Helper protocol</h2>
-        <p>The <code>stryke-mongo-helper</code> sidecar speaks newline-delimited JSON over stdin/stdout. The stryke library shells out per call and pipes structured data both ways. This keeps stryke startup small while making the package's surface area available on demand.</p>
-<pre># manual invocation (debugging only)
-echo '{"op":"version"}' | stryke-mongo-helper</pre>
+        <h2>FFI layer</h2>
+        <p>Each <code>Mongo::*</code> wrapper builds a JSON args dict and calls a sibling <code>mongo__*</code> symbol resolved out of <code>libstryke_mongo.{dylib,so}</code>. The cdylib is dlopened in-process on first <code>use Mongo</code>; a shared tokio runtime + a <code>mongodb::Client</code> cache keyed by connection URI is held in <code>OnceCell</code> &mdash; no fork-per-call, no fresh TCP+TLS+auth handshake per call. Responses are JSON; errors come back as a <code>{"error": "&lt;msg&gt;"}</code> payload and the wrapper <code>die</code>s with <code>Mongo::&lt;op&gt;: &lt;reason&gt;</code>.</p>
       </section>
 
       <section class="tutorial-section">
         <h2>Layout</h2>
 <pre>stryke-mongo/
-&#9500;&#9472;&#9472; Cargo.toml             # bin = stryke-mongo-helper (publish = false)
+&#9500;&#9472;&#9472; Cargo.toml             # cdylib crate manifest (crate-type = ["cdylib"], publish = false)
 &#9500;&#9472;&#9472; src/
-&#9474;   &#9492;&#9472;&#9472; main.rs           # helper binary entry point
-&#9500;&#9472;&#9472; lib/                   # stryke .stk wrapper(s)
+&#9474;   &#9492;&#9472;&#9472; lib.rs            # cdylib — mongo__* extern "C" exports
+&#9500;&#9472;&#9472; lib/                   # stryke .stk wrapper(s) — `use Mongo`
 &#9500;&#9472;&#9472; stryke.toml            # stryke package manifest
 &#9500;&#9472;&#9472; t/                     # zunit-style tests
 &#9500;&#9472;&#9472; examples/              # runnable .stk examples
