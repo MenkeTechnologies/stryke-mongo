@@ -202,6 +202,15 @@ fn Mongo::create_index ($target, $keys, %opts) {
     Mongo::_decode("create_index", mongo__create_index(to_json($r)))->{name}
 }
 
+## Create several indexes on $target ("db.coll") in one command. $indexes is an
+## arrayref of { keys => {...}, name? => "...", unique? => 1 }. Returns the
+## createIndexes result.
+fn Mongo::create_indexes ($target, $indexes, %opts) {
+    die "Mongo::create_indexes: indexes must be an arrayref" unless ref($indexes) eq "ARRAY"
+    val $r = Mongo::_req({ target => $target, indexes => $indexes }, \%opts)
+    Mongo::_decode("create_indexes", mongo__create_indexes(to_json($r)))->{result}
+}
+
 ## Drop index by name; returns 1 on success.
 fn Mongo::drop_index ($target, $name, %opts) {
     val $r = Mongo::_req({ target => $target, name => $name }, \%opts)

@@ -228,6 +228,7 @@ Mongo::list_collections  $db, %opts → @names
 Mongo::create_collection $db, $coll, %opts → { ok, created }
 Mongo::drop_collection   $target, %opts → { ok, dropped }
 Mongo::create_index      $target, \%keys, %opts → $index_name
+Mongo::create_indexes    $target, \@indexes, %opts → \%result   # [{keys, name?, unique?}]
 Mongo::drop_index        $target, $name, %opts → 1 | ""
 Mongo::indexes           $target, %opts → @specs
 Mongo::run_command       $db, \%command, %opts → \%result     # arbitrary db command

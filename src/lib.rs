@@ -528,6 +528,37 @@ async fn op_create_index(opts: Value) -> Result<Value> {
     Ok(json!({"name": r.index_name}))
 }
 
+async fn op_create_indexes(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let specs = opts["indexes"]
+        .as_array()
+        .ok_or_else(|| anyhow!("missing indexes (array of {{ keys, name?, unique? }})"))?;
+    if specs.is_empty() {
+        return Err(anyhow!("indexes must be non-empty"));
+    }
+    // Build a createIndexes command from each spec: keys (required) + the
+    // optional name/unique flags carried straight through.
+    let mut index_docs = Vec::with_capacity(specs.len());
+    for s in specs {
+        let keys = json_to_doc(&s["keys"])?;
+        if keys.is_empty() {
+            return Err(anyhow!("each index needs a non-empty keys object"));
+        }
+        let mut idx = json!({ "key": doc_to_json(&keys)? });
+        if let Some(name) = s["name"].as_str() {
+            idx["name"] = json!(name);
+        }
+        if let Some(u) = s["unique"].as_bool() {
+            idx["unique"] = json!(u);
+        }
+        index_docs.push(idx);
+    }
+    let cmd = json_to_doc(&json!({ "createIndexes": coll, "indexes": index_docs }))?;
+    let r = c.database(&db).run_command(cmd).await?;
+    Ok(json!({ "result": doc_to_json(&r)? }))
+}
+
 async fn op_drop_index(opts: Value) -> Result<Value> {
     let c = get_client(&opts).await?;
     let (db, coll) = parse_target(&opts, None)?;
@@ -676,6 +707,11 @@ pub extern "C" fn mongo__delete_many(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__create_index(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_create_index)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__create_indexes(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_create_indexes)
 }
 
 #[no_mangle]
