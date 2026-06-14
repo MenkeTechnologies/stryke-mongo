@@ -440,6 +440,39 @@ async fn op_run_command(opts: Value) -> Result<Value> {
     Ok(json!({"result": doc_to_json(&r)?}))
 }
 
+async fn op_rename_collection(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let to = opts["to"]
+        .as_str()
+        .ok_or_else(|| anyhow!("missing to (new name)"))?;
+    let drop_target = opts["drop_target"].as_bool().unwrap_or(false);
+    // renameCollection lives on the admin DB and takes fully-qualified namespaces.
+    let cmd = json_to_doc(&json!({
+        "renameCollection": format!("{}.{}", db, coll),
+        "to": format!("{}.{}", db, to),
+        "dropTarget": drop_target,
+    }))?;
+    c.database("admin").run_command(cmd).await?;
+    Ok(json!({"ok": true, "renamed": to}))
+}
+
+async fn op_coll_stats(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let cmd = json_to_doc(&json!({"collStats": coll}))?;
+    let r = c.database(&db).run_command(cmd).await?;
+    Ok(json!({"stats": doc_to_json(&r)?}))
+}
+
+async fn op_db_stats(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let db = opts["db"].as_str().ok_or_else(|| anyhow!("missing db"))?;
+    let cmd = json_to_doc(&json!({"dbStats": 1}))?;
+    let r = c.database(db).run_command(cmd).await?;
+    Ok(json!({"stats": doc_to_json(&r)?}))
+}
+
 async fn op_delete_one(opts: Value) -> Result<Value> {
     let c = get_client(&opts).await?;
     let (db, coll) = parse_target(&opts, None)?;
@@ -666,6 +699,21 @@ pub extern "C" fn mongo__drop_collection(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__run_command(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_run_command)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__rename_collection(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_rename_collection)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__coll_stats(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_coll_stats)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__db_stats(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_db_stats)
 }
 
 #[cfg(test)]

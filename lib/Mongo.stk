@@ -281,3 +281,25 @@ fn Mongo::collection_exists ($db, $coll, %opts) {
     }
     0
 }
+
+# ── admin / stats ─────────────────────────────────────────────────────
+
+## Rename $target ("db.coll") to $to within the same database. opt
+## `drop_target => 1` overwrites an existing destination.
+fn Mongo::rename_collection ($target, $to, %opts) {
+    val $r = Mongo::_req(
+        { target => $target, to => $to, drop_target => ($opts{drop_target} ? \1 : \0) }, \%opts)
+    Mongo::_decode("rename_collection", mongo__rename_collection(to_json($r)))
+}
+
+## collStats for $target ("db.coll") — size, count, storage, index sizes.
+fn Mongo::coll_stats ($target, %opts) {
+    val $r = Mongo::_req({ target => $target }, \%opts)
+    Mongo::_decode("coll_stats", mongo__coll_stats(to_json($r)))->{stats}
+}
+
+## dbStats for $db — collections, objects, dataSize, indexes, storageSize.
+fn Mongo::db_stats ($db, %opts) {
+    val $r = Mongo::_req({ db => $db }, \%opts)
+    Mongo::_decode("db_stats", mongo__db_stats(to_json($r)))->{stats}
+}

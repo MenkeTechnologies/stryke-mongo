@@ -48,4 +48,9 @@ assert_ok exists &Mongo::exists, "Mongo::exists exists"
 assert_ok exists &Mongo::find_value, "Mongo::find_value exists"
 assert_ok exists &Mongo::collection_exists, "Mongo::collection_exists exists"
 
+# ── Mongo.stk admin/stats extras ──
+assert_ok exists &Mongo::rename_collection, "Mongo::rename_collection exists"
+assert_ok exists &Mongo::coll_stats, "Mongo::coll_stats exists"
+assert_ok exists &Mongo::db_stats, "Mongo::db_stats exists"
+
 test_run

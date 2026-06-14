@@ -231,6 +231,9 @@ Mongo::create_index      $target, \%keys, %opts → $index_name
 Mongo::drop_index        $target, $name, %opts → 1 | ""
 Mongo::indexes           $target, %opts → @specs
 Mongo::run_command       $db, \%command, %opts → \%result     # arbitrary db command
+Mongo::rename_collection $target, $to, %opts → { ok, renamed } # opt: drop_target
+Mongo::coll_stats        $target, %opts → \%stats             # collStats
+Mongo::db_stats          $db, %opts → \%stats                 # dbStats
 Mongo::ping              %opts → 1 | ""
 ```
 

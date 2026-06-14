@@ -37,6 +37,9 @@ exports = [
     "mongo__create_collection",
     "mongo__drop_collection",
     "mongo__run_command",
+    "mongo__rename_collection",
+    "mongo__coll_stats",
+    "mongo__db_stats",
 ]
 
 [scripts]
