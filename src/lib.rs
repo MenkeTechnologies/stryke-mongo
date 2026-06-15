@@ -737,6 +737,27 @@ fn op_parse_namespace(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Build a `db.collection` namespace from parts — the inverse of
+/// `parse_namespace`. opts: `db` and `collection` (both required, non-empty).
+/// The db must not contain a `.` (MongoDB forbids it, and `parse_namespace`
+/// splits on the first dot, so a dotted db would not round-trip). Pure.
+fn op_build_namespace(opts: Value) -> Result<Value> {
+    let db = opts
+        .get("db")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing db"))?;
+    let collection = opts
+        .get("collection")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing collection"))?;
+    if db.contains('.') {
+        return Err(anyhow!("db name must not contain `.`: {db}"));
+    }
+    Ok(json!({"namespace": format!("{db}.{collection}")}))
+}
+
 /// Whether a string is a valid 24-hex-char MongoDB ObjectId. Validation is
 /// delegated to `bson::oid::ObjectId`, so it tracks the library exactly.
 fn op_is_valid_objectid(opts: Value) -> Result<Value> {
@@ -948,6 +969,11 @@ pub extern "C" fn mongo__parse_connection_string(args: *const c_char) -> *const 
 #[no_mangle]
 pub extern "C" fn mongo__parse_namespace(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_namespace(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__build_namespace(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_namespace(opts) })
 }
 
 #[no_mangle]
@@ -1605,6 +1631,23 @@ mod tests {
             "collection keeps later dots"
         );
         assert!(op_parse_namespace(json!({"namespace": "no_dot"})).is_err());
+    }
+
+    #[test]
+    fn build_namespace_inverts_parse_namespace() {
+        // db + collection (with later dots) → namespace, round-trips through parse.
+        let ns = op_build_namespace(json!({"db": "shop", "collection": "orders.2025"})).unwrap()
+            ["namespace"]
+            .clone();
+        assert_eq!(ns, json!("shop.orders.2025"));
+        let back = op_parse_namespace(json!({"namespace": ns})).unwrap();
+        assert_eq!(back["db"], json!("shop"));
+        assert_eq!(back["collection"], json!("orders.2025"));
+        // A db with a dot is rejected (would break the first-dot split).
+        assert!(op_build_namespace(json!({"db": "a.b", "collection": "c"})).is_err());
+        // Missing/empty parts error.
+        assert!(op_build_namespace(json!({"db": "shop"})).is_err());
+        assert!(op_build_namespace(json!({"db": "", "collection": "c"})).is_err());
     }
 
     #[test]

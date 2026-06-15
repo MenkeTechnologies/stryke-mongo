@@ -346,6 +346,14 @@ fn Mongo::parse_namespace ($namespace) {
     Mongo::_decode("parse_namespace", mongo__parse_namespace(to_json({ namespace => $namespace })))
 }
 
+## Join $db and $collection into a "db.collection" namespace — inverse of
+## parse_namespace. $db must not contain a dot (MongoDB forbids it). Returns the
+## namespace string.
+fn Mongo::build_namespace ($db, $collection) {
+    Mongo::_decode("build_namespace",
+        mongo__build_namespace(to_json({ db => $db, collection => $collection })))->{namespace}
+}
+
 ## True if $id is a valid 24-hex-char ObjectId (validated via bson).
 fn Mongo::is_valid_objectid ($id) {
     Mongo::_decode("is_valid_objectid", mongo__is_valid_objectid(to_json({ id => $id })))->{valid}

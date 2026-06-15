@@ -245,6 +245,7 @@ Mongo::ping              %opts → 1 | ""
 ```stryke
 Mongo::parse_connection_string($uri) → { scheme, srv, user, password, hosts:[{host,port}], database, params }
 Mongo::parse_namespace($ns)          → { db, collection }   # split on first dot
+Mongo::build_namespace($db, $coll)   → $ns                 # join db.collection; inverse of parse_namespace
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes
@@ -294,7 +295,7 @@ cdylib is dlopened in-process on first `use Mongo` (via stryke's
 `pkg::commands::try_load_ffi_for` resolver hook). Its exports cover
 version/ping, discovery, find/count/aggregate, write paths, index admin,
 and connection-free helpers (`mongo__parse_connection_string`,
-`mongo__parse_namespace`, `mongo__is_valid_objectid`,
+`mongo__parse_namespace`, `mongo__build_namespace`, `mongo__is_valid_objectid`,
 `mongo__new_objectid`, `mongo__objectid_timestamp`). The authoritative
 list is `[ffi].exports` in
 `stryke.toml`.

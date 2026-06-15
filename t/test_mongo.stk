@@ -96,6 +96,10 @@ val $ns = Mongo::parse_namespace("shop.orders.2025")
 assert_eq $ns->{db},         "shop",       "parse_namespace: db"
 assert_eq $ns->{collection}, "orders.2025", "parse_namespace: collection keeps dots"
 
+# build_namespace: inverse of parse_namespace; rejects a dotted db.
+assert_eq Mongo::build_namespace("shop", "orders.2025"), "shop.orders.2025", "build_namespace: joins db.collection"
+assert_dies fn { Mongo::build_namespace("a.b", "c") }, "build_namespace: rejects a db containing a dot"
+
 val $oid = Mongo::new_objectid()
 assert_eq length($oid), 24, "new_objectid: 24 hex chars"
 assert_eq Mongo::is_valid_objectid($oid), 1, "is_valid_objectid: accepts a fresh oid"
