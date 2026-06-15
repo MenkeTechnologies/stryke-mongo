@@ -625,6 +625,134 @@ pub unsafe extern "C" fn stryke_free_cstring(p: *mut c_char) {
     drop(CString::from_raw(p));
 }
 
+// ── pure helpers (no connection) ─────────────────────────────────────────────
+
+/// RFC 3986 percent-decode for userinfo / database / option values in a
+/// MongoDB URI. Invalid escapes are left verbatim.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Parse a MongoDB connection string `mongodb[+srv]://[user[:pass]@]host[:port]
+/// [,host2…][/[db][?opts]]` into its parts. Unlike a SQL DSN this carries a
+/// host LIST. Userinfo / db / option values are percent-decoded. Pure — opens
+/// nothing and never resolves `+srv` DNS.
+fn op_parse_connection_string(opts: Value) -> Result<Value> {
+    let uri = opts
+        .get("uri")
+        .or_else(|| opts.get("dsn"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing uri"))?;
+    let (scheme, rest) = uri
+        .split_once("://")
+        .ok_or_else(|| anyhow!("not a MongoDB URI (missing `://`): {uri}"))?;
+    let srv = match scheme {
+        "mongodb" => false,
+        "mongodb+srv" => true,
+        other => {
+            return Err(anyhow!(
+                "unsupported scheme `{other}` (want mongodb|mongodb+srv)"
+            ))
+        }
+    };
+    let (authority_path, query) = match rest.split_once('?') {
+        Some((ap, q)) => (ap, Some(q)),
+        None => (rest, None),
+    };
+    let (authority, path) = match authority_path.split_once('/') {
+        Some((a, p)) => (a, Some(p)),
+        None => (authority_path, None),
+    };
+    let (userinfo, hosts_str) = match authority.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, authority),
+    };
+    let (user, password) = match userinfo {
+        Some(ui) => match ui.split_once(':') {
+            Some((u, p)) => (Some(percent_decode(u)), Some(percent_decode(p))),
+            None => (Some(percent_decode(ui)), None),
+        },
+        None => (None, None),
+    };
+    let hosts: Vec<Value> = hosts_str
+        .split(',')
+        .filter(|s| !s.is_empty())
+        .map(|hp| match hp.rsplit_once(':') {
+            Some((h, p)) => match p.parse::<u32>() {
+                Ok(port) => json!({"host": h, "port": port}),
+                Err(_) => json!({"host": hp, "port": Value::Null}),
+            },
+            None => json!({"host": hp, "port": Value::Null}),
+        })
+        .collect();
+    let database = path.filter(|p| !p.is_empty()).map(percent_decode);
+    let mut params = serde_json::Map::new();
+    if let Some(q) = query {
+        for pair in q.split('&').filter(|s| !s.is_empty()) {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            params.insert(percent_decode(k), json!(percent_decode(v)));
+        }
+    }
+    Ok(json!({
+        "scheme": scheme,
+        "srv": srv,
+        "user": user,
+        "password": password,
+        "hosts": hosts,
+        "database": database,
+        "params": Value::Object(params),
+    }))
+}
+
+/// Split a `db.collection` namespace on its FIRST dot (collection names may
+/// contain dots; database names may not). Pure.
+fn op_parse_namespace(opts: Value) -> Result<Value> {
+    let ns = opts
+        .get("namespace")
+        .or_else(|| opts.get("target"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing namespace (db.collection)"))?;
+    let dot = ns
+        .find('.')
+        .ok_or_else(|| anyhow!("namespace `{ns}` has no `db.` prefix"))?;
+    Ok(json!({
+        "db": &ns[..dot],
+        "collection": &ns[dot + 1..],
+    }))
+}
+
+/// Whether a string is a valid 24-hex-char MongoDB ObjectId. Validation is
+/// delegated to `bson::oid::ObjectId`, so it tracks the library exactly.
+fn op_is_valid_objectid(opts: Value) -> Result<Value> {
+    let id = opts
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing id"))?;
+    Ok(json!({"id": id, "valid": bson::oid::ObjectId::parse_str(id).is_ok()}))
+}
+
+/// Generate a fresh ObjectId as a 24-hex string (time + counter + random, per
+/// the BSON spec via `bson::oid::ObjectId::new`).
+fn op_new_objectid(_opts: Value) -> Result<Value> {
+    Ok(json!({"oid": bson::oid::ObjectId::new().to_hex()}))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -787,6 +915,26 @@ pub extern "C" fn mongo__explain(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__server_status(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_server_status)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__parse_connection_string(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_connection_string(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__parse_namespace(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_namespace(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__is_valid_objectid(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_is_valid_objectid(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__new_objectid(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_new_objectid(opts) })
 }
 
 #[cfg(test)]
@@ -1363,5 +1511,103 @@ mod tests {
             .and_then(Bson::as_i64)
             .or_else(|| d.get_i32("ts").ok().map(i64::from));
         assert_eq!(ts, Some(-1));
+    }
+
+    // ── pure helpers (no connection) ─────────────────────────────────────────
+
+    #[test]
+    fn parse_connection_string_single_host_with_auth_and_opts() {
+        let v = op_parse_connection_string(json!({
+            "uri": "mongodb://app:s3cret@db.example.com:27018/shop?authSource=admin&retryWrites=true"
+        }))
+        .unwrap();
+        assert_eq!(v["scheme"], json!("mongodb"));
+        assert_eq!(v["srv"], json!(false));
+        assert_eq!(v["user"], json!("app"));
+        assert_eq!(v["password"], json!("s3cret"));
+        let hosts = v["hosts"].as_array().unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0]["host"], json!("db.example.com"));
+        assert_eq!(hosts[0]["port"], json!(27018));
+        assert_eq!(v["database"], json!("shop"));
+        assert_eq!(v["params"]["authSource"], json!("admin"));
+    }
+
+    #[test]
+    fn parse_connection_string_multi_host_replica_set() {
+        // The distinguishing MongoDB feature: a comma-separated host list, ports
+        // optional per host.
+        let v = op_parse_connection_string(json!({
+            "uri": "mongodb://h1:27017,h2:27017,h3/rs?replicaSet=rs0"
+        }))
+        .unwrap();
+        let hosts = v["hosts"].as_array().unwrap();
+        assert_eq!(hosts.len(), 3, "three replica-set members");
+        assert_eq!(hosts[0]["port"], json!(27017));
+        assert_eq!(hosts[2]["host"], json!("h3"));
+        assert_eq!(hosts[2]["port"], Value::Null, "portless host → null port");
+        assert_eq!(v["params"]["replicaSet"], json!("rs0"));
+    }
+
+    #[test]
+    fn parse_connection_string_srv_and_percent_decoded_password() {
+        let v = op_parse_connection_string(json!({
+            "uri": "mongodb+srv://u:p%40ss@cluster0.mongodb.net/db"
+        }))
+        .unwrap();
+        assert_eq!(v["scheme"], json!("mongodb+srv"));
+        assert_eq!(v["srv"], json!(true));
+        assert_eq!(v["password"], json!("p@ss"), "userinfo percent-decoded");
+    }
+
+    #[test]
+    fn parse_connection_string_rejects_bad_scheme_and_non_uri() {
+        assert!(op_parse_connection_string(json!({"uri": "postgres://localhost/x"})).is_err());
+        assert!(op_parse_connection_string(json!({"uri": "h1:27017"})).is_err());
+        assert!(op_parse_connection_string(json!({})).is_err());
+    }
+
+    #[test]
+    fn parse_namespace_splits_on_first_dot_only() {
+        let v = op_parse_namespace(json!({"namespace": "shop.orders.2025"})).unwrap();
+        assert_eq!(v["db"], json!("shop"));
+        assert_eq!(
+            v["collection"],
+            json!("orders.2025"),
+            "collection keeps later dots"
+        );
+        assert!(op_parse_namespace(json!({"namespace": "no_dot"})).is_err());
+    }
+
+    #[test]
+    fn is_valid_objectid_matches_bson() {
+        let real = bson::oid::ObjectId::new().to_hex();
+        assert_eq!(
+            op_is_valid_objectid(json!({"id": real})).unwrap()["valid"],
+            json!(true)
+        );
+        assert_eq!(
+            op_is_valid_objectid(json!({"id": "not-an-oid"})).unwrap()["valid"],
+            json!(false)
+        );
+        // 23 chars (one short) must be rejected.
+        assert_eq!(
+            op_is_valid_objectid(json!({"id": "5f43a1b2c3d4e5f6a7b8c9d0"[..23].to_string()}))
+                .unwrap()["valid"],
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn new_objectid_is_a_valid_24_hex_string() {
+        let oid = op_new_objectid(json!({})).unwrap();
+        let s = oid["oid"].as_str().unwrap();
+        assert_eq!(s.len(), 24, "ObjectId hex is 24 chars");
+        assert!(s.chars().all(|c| c.is_ascii_hexdigit()));
+        // And it round-trips through the validator.
+        assert_eq!(
+            op_is_valid_objectid(json!({"id": s})).unwrap()["valid"],
+            json!(true)
+        );
     }
 }

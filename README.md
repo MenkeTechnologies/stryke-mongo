@@ -240,6 +240,19 @@ Mongo::server_status     %opts → \%status                     # opts: db (defa
 Mongo::ping              %opts → 1 | ""
 ```
 
+### Pure helpers (no connection)
+
+```stryke
+Mongo::parse_connection_string($uri) → { scheme, srv, user, password, hosts:[{host,port}], database, params }
+Mongo::parse_namespace($ns)          → { db, collection }   # split on first dot
+Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
+Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
+```
+
+Unlike a SQL DSN, `parse_connection_string` returns a host **list** (replica
+sets) and recognizes `mongodb+srv://` — it parses structure only, never
+resolving SRV DNS.
+
 ### Plumbing
 
 ```stryke
@@ -277,9 +290,12 @@ filter like `{"_id": {"$oid": "65f9…"}}` will be re-parsed to a real
 Each `Mongo::*` wrapper builds a JSON args dict and calls a sibling
 `mongo__*` symbol resolved out of `libstryke_mongo.{dylib,so}`. The
 cdylib is dlopened in-process on first `use Mongo` (via stryke's
-`pkg::commands::try_load_ffi_for` resolver hook) and exposes 18 entry
-points covering version/ping, discovery, find/count/aggregate, write
-paths, and index admin.
+`pkg::commands::try_load_ffi_for` resolver hook). Its exports cover
+version/ping, discovery, find/count/aggregate, write paths, index admin,
+and connection-free helpers (`mongo__parse_connection_string`,
+`mongo__parse_namespace`, `mongo__is_valid_objectid`,
+`mongo__new_objectid`). The authoritative list is `[ffi].exports` in
+`stryke.toml`.
 
 Errors come back as a `{error}` JSON payload; the stryke wrapper dies
 with `Mongo::<op>: <reason>`.

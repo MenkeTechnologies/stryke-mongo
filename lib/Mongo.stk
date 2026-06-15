@@ -329,3 +329,29 @@ fn Mongo::server_status (%opts) {
     val $r = Mongo::_req({ db => ($opts{db} // "admin") }, \%opts)
     Mongo::_decode("server_status", mongo__server_status(to_json($r)))->{status}
 }
+
+# ── pure helpers (no connection) ──────────────────────────────────────
+
+## Parse a MongoDB connection string into a hashref { scheme, srv, user,
+## password, hosts => [{ host, port }], database, params }. Carries a host
+## LIST (replica sets); userinfo/db/option values are percent-decoded. Never
+## resolves +srv DNS.
+fn Mongo::parse_connection_string ($uri) {
+    Mongo::_decode("parse_connection_string",
+        mongo__parse_connection_string(to_json({ uri => $uri })))
+}
+
+## Split a "db.collection" namespace on its first dot → { db, collection }.
+fn Mongo::parse_namespace ($namespace) {
+    Mongo::_decode("parse_namespace", mongo__parse_namespace(to_json({ namespace => $namespace })))
+}
+
+## True if $id is a valid 24-hex-char ObjectId (validated via bson).
+fn Mongo::is_valid_objectid ($id) {
+    Mongo::_decode("is_valid_objectid", mongo__is_valid_objectid(to_json({ id => $id })))->{valid}
+}
+
+## Generate a fresh ObjectId as a 24-hex string.
+fn Mongo::new_objectid {
+    Mongo::_decode("new_objectid", mongo__new_objectid("{}"))->{oid}
+}

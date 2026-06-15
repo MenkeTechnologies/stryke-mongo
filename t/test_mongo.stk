@@ -77,4 +77,30 @@ if ($alive) {
     eval { Mongo::drop_index($tgt, "name_1", %conn) }
 }
 
+# ── pure helpers (no connection — always run) ────────────────────────
+# `\@` escapes the at-sign so stryke does not array-interpolate it.
+val $c = Mongo::parse_connection_string("mongodb://app:s3cret\@h1:27017,h2:27017/shop?replicaSet=rs0")
+assert_eq $c->{scheme},   "mongodb", "parse_connection_string: scheme"
+assert_eq $c->{srv},      0,         "parse_connection_string: not srv"
+assert_eq $c->{user},     "app",     "parse_connection_string: user"
+assert_eq scalar(@{ $c->{hosts} }), 2, "parse_connection_string: two hosts"
+assert_eq $c->{hosts}[0]{host}, "h1", "parse_connection_string: first host"
+assert_eq $c->{hosts}[1]{port}, 27017, "parse_connection_string: second host port"
+assert_eq $c->{database}, "shop",    "parse_connection_string: database"
+assert_eq $c->{params}{replicaSet}, "rs0", "parse_connection_string: option"
+
+val $srv = Mongo::parse_connection_string("mongodb+srv://u:p\@cluster0.mongodb.net/db")
+assert_eq $srv->{srv}, 1, "parse_connection_string: +srv flag"
+
+val $ns = Mongo::parse_namespace("shop.orders.2025")
+assert_eq $ns->{db},         "shop",       "parse_namespace: db"
+assert_eq $ns->{collection}, "orders.2025", "parse_namespace: collection keeps dots"
+
+val $oid = Mongo::new_objectid()
+assert_eq length($oid), 24, "new_objectid: 24 hex chars"
+assert_eq Mongo::is_valid_objectid($oid), 1, "is_valid_objectid: accepts a fresh oid"
+assert_eq Mongo::is_valid_objectid("not-an-oid"), 0, "is_valid_objectid: rejects garbage"
+
+assert_dies fn { Mongo::parse_connection_string("postgres://localhost/x") }, "parse_connection_string rejects non-mongo scheme"
+
 test_run
