@@ -355,3 +355,10 @@ fn Mongo::is_valid_objectid ($id) {
 fn Mongo::new_objectid {
     Mongo::_decode("new_objectid", mongo__new_objectid("{}"))->{oid}
 }
+
+## Extract the creation timestamp embedded in an ObjectId's leading 4 bytes
+## (the shell's ObjectId.getTimestamp()). Returns a hashref
+## { epoch_seconds, epoch_millis, iso }.
+fn Mongo::objectid_timestamp ($id) {
+    Mongo::_decode("objectid_timestamp", mongo__objectid_timestamp(to_json({ id => $id })))
+}

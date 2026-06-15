@@ -753,6 +753,29 @@ fn op_new_objectid(_opts: Value) -> Result<Value> {
     Ok(json!({"oid": bson::oid::ObjectId::new().to_hex()}))
 }
 
+/// Extract the creation timestamp embedded in an ObjectId's leading 4 bytes
+/// (`ObjectId.getTimestamp()` in the shell). Delegates to
+/// `bson::oid::ObjectId::timestamp`, so it tracks the library's decoding
+/// exactly. Returns `{ epoch_seconds, epoch_millis, iso }`. Pure.
+fn op_objectid_timestamp(opts: Value) -> Result<Value> {
+    let id = opts
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing id"))?;
+    let oid =
+        bson::oid::ObjectId::parse_str(id).map_err(|e| anyhow!("invalid ObjectId `{id}`: {e}"))?;
+    let dt = oid.timestamp();
+    let millis = dt.timestamp_millis();
+    let iso = dt
+        .try_to_rfc3339_string()
+        .map_err(|e| anyhow!("ObjectId timestamp out of range: {e}"))?;
+    Ok(json!({
+        "epoch_seconds": millis / 1000,
+        "epoch_millis": millis,
+        "iso": iso,
+    }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -935,6 +958,11 @@ pub extern "C" fn mongo__is_valid_objectid(args: *const c_char) -> *const c_char
 #[no_mangle]
 pub extern "C" fn mongo__new_objectid(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_new_objectid(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__objectid_timestamp(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_objectid_timestamp(opts) })
 }
 
 #[cfg(test)]
@@ -1609,5 +1637,31 @@ mod tests {
             op_is_valid_objectid(json!({"id": s})).unwrap()["valid"],
             json!(true)
         );
+    }
+
+    #[test]
+    fn objectid_timestamp_decodes_leading_four_bytes() {
+        // First 4 bytes `4d88e15b` = 0x4d88e15b = 1300816219 seconds since epoch.
+        let v = op_objectid_timestamp(json!({"id": "4d88e15b60f486e428412dc9"})).unwrap();
+        assert_eq!(v["epoch_seconds"], json!(1_300_816_219i64));
+        assert_eq!(v["epoch_millis"], json!(1_300_816_219_000i64));
+        assert_eq!(
+            v["iso"], "2011-03-22T17:50:19Z",
+            "RFC3339 string of the embedded timestamp"
+        );
+        // The all-zero ObjectId decodes to the Unix epoch.
+        let zero = op_objectid_timestamp(json!({"id": "000000000000000000000000"})).unwrap();
+        assert_eq!(zero["epoch_seconds"], json!(0));
+        // A freshly generated id's timestamp is well after 2020 (1.5e9 s).
+        let fresh = op_new_objectid(json!({})).unwrap()["oid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let ts = op_objectid_timestamp(json!({"id": fresh})).unwrap();
+        assert!(
+            ts["epoch_seconds"].as_i64().unwrap() > 1_500_000_000,
+            "new ObjectId carries a recent timestamp"
+        );
+        assert!(op_objectid_timestamp(json!({"id": "nothex"})).is_err());
     }
 }

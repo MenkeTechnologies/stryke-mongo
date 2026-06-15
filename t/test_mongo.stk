@@ -101,6 +101,12 @@ assert_eq length($oid), 24, "new_objectid: 24 hex chars"
 assert_eq Mongo::is_valid_objectid($oid), 1, "is_valid_objectid: accepts a fresh oid"
 assert_eq Mongo::is_valid_objectid("not-an-oid"), 0, "is_valid_objectid: rejects garbage"
 
+# objectid_timestamp: decode the creation time embedded in the leading 4 bytes.
+val $ts = Mongo::objectid_timestamp("4d88e15b60f486e428412dc9")
+assert_eq $ts->{epoch_seconds}, 1300816219,       "objectid_timestamp: epoch seconds"
+assert_eq $ts->{iso}, "2011-03-22T17:50:19Z",      "objectid_timestamp: ISO string"
+assert_dies fn { Mongo::objectid_timestamp("nothex") }, "objectid_timestamp rejects a non-ObjectId"
+
 assert_dies fn { Mongo::parse_connection_string("postgres://localhost/x") }, "parse_connection_string rejects non-mongo scheme"
 
 test_run

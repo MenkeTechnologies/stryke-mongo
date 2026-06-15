@@ -247,6 +247,7 @@ Mongo::parse_connection_string($uri) → { scheme, srv, user, password, hosts:[{
 Mongo::parse_namespace($ns)          → { db, collection }   # split on first dot
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
+Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes
 ```
 
 Unlike a SQL DSN, `parse_connection_string` returns a host **list** (replica
@@ -294,7 +295,8 @@ cdylib is dlopened in-process on first `use Mongo` (via stryke's
 version/ping, discovery, find/count/aggregate, write paths, index admin,
 and connection-free helpers (`mongo__parse_connection_string`,
 `mongo__parse_namespace`, `mongo__is_valid_objectid`,
-`mongo__new_objectid`). The authoritative list is `[ffi].exports` in
+`mongo__new_objectid`, `mongo__objectid_timestamp`). The authoritative
+list is `[ffi].exports` in
 `stryke.toml`.
 
 Errors come back as a `{error}` JSON payload; the stryke wrapper dies
