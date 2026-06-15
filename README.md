@@ -247,6 +247,7 @@ Mongo::parse_connection_string($uri) → { scheme, srv, user, password, hosts:[{
 Mongo::parse_namespace($ns)          → { db, collection }   # split on first dot
 Mongo::build_namespace($db, $coll)   → $ns                 # join db.collection; inverse of parse_namespace
 Mongo::valid_collection_name($name, $db?) → { name, valid, reason }   # MongoDB rules: no $, no null, not empty, no system. prefix; 255-byte ns with $db
+Mongo::valid_database_name($name) → { name, valid, reason }   # MongoDB db rules: not empty, <64 chars, no null/space/ /\."$*<>:|?
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes

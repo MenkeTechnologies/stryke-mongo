@@ -363,6 +363,13 @@ fn Mongo::valid_collection_name ($name, $db = undef) {
         mongo__valid_collection_name(to_json({ name => $name, db => $db })))
 }
 
+## Validate a MongoDB database $name (distinct rules from a collection): not
+## empty, fewer than 64 characters, no null character, and none of a space or
+## / \ . " $ * < > : | ?. Returns a hashref { name, valid, reason }.
+fn Mongo::valid_database_name ($name) {
+    Mongo::_decode("valid_database_name", mongo__valid_database_name(to_json({ name => $name })))
+}
+
 ## True if $id is a valid 24-hex-char ObjectId (validated via bson).
 fn Mongo::is_valid_objectid ($id) {
     Mongo::_decode("is_valid_objectid", mongo__is_valid_objectid(to_json({ id => $id })))->{valid}

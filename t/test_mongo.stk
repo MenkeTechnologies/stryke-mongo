@@ -110,6 +110,16 @@ val $ns = Mongo::valid_collection_name("c" x 260, "mydb")
 assert_eq $ns->{valid}, 0, "valid_collection_name: namespace over 255 bytes with a db"
 assert_match qr/255 bytes/, $ns->{reason}, "valid_collection_name: reason names the namespace limit"
 
+# valid_database_name: MongoDB database naming rules (distinct from collections).
+assert_ok Mongo::valid_database_name("myapp")->{valid},          "valid_database_name: ordinary name"
+assert_eq Mongo::valid_database_name("has.dot")->{valid}, 0,     "valid_database_name: dot forbidden (unlike collections)"
+assert_eq Mongo::valid_database_name("has space")->{valid}, 0,   "valid_database_name: space forbidden"
+assert_eq Mongo::valid_database_name("with\$dollar")->{valid}, 0, "valid_database_name: '\$' forbidden"
+assert_eq Mongo::valid_database_name("")->{valid}, 0,            "valid_database_name: empty rejected"
+val $dl = Mongo::valid_database_name("a" x 64)
+assert_eq $dl->{valid}, 0,                                       "valid_database_name: 64 chars fails (must be fewer than 64)"
+assert_match qr/64/, $dl->{reason},                             "valid_database_name: reason names the limit"
+
 val $oid = Mongo::new_objectid()
 assert_eq length($oid), 24, "new_objectid: 24 hex chars"
 assert_eq Mongo::is_valid_objectid($oid), 1, "is_valid_objectid: accepts a fresh oid"

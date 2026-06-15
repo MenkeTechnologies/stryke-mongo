@@ -786,6 +786,30 @@ fn op_valid_collection_name(opts: Value) -> Result<Value> {
     Ok(json!({"name": name, "valid": reason.is_none(), "reason": reason}))
 }
 
+/// Validate a MongoDB database name (distinct rules from a collection name): it
+/// must not be empty, must be fewer than 64 characters, and must not contain a
+/// null character or any of `/ \ . " $ * < > : | ?` or a space — the
+/// cross-platform restricted set. Returns `{name, valid, reason}`. Pure.
+fn op_valid_database_name(opts: Value) -> Result<Value> {
+    let name = opts
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing name"))?;
+    const FORBIDDEN: &[char] = &['/', '\\', '.', ' ', '"', '$', '*', '<', '>', ':', '|', '?'];
+    let reason: Option<&str> = if name.is_empty() {
+        Some("must not be empty")
+    } else if name.chars().count() >= 64 {
+        Some("must be fewer than 64 characters")
+    } else if name.contains('\0') {
+        Some("must not contain a null character")
+    } else if name.chars().any(|c| FORBIDDEN.contains(&c)) {
+        Some("must not contain a space or any of: / \\ . \" $ * < > : | ?")
+    } else {
+        None
+    };
+    Ok(json!({"name": name, "valid": reason.is_none(), "reason": reason}))
+}
+
 /// Whether a string is a valid 24-hex-char MongoDB ObjectId. Validation is
 /// delegated to `bson::oid::ObjectId`, so it tracks the library exactly.
 fn op_is_valid_objectid(opts: Value) -> Result<Value> {
@@ -1035,6 +1059,11 @@ pub extern "C" fn mongo__build_namespace(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__valid_collection_name(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_valid_collection_name(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__valid_database_name(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_database_name(opts) })
 }
 
 #[no_mangle]
@@ -1759,6 +1788,41 @@ mod tests {
             ok(&long),
             "the same long name is fine without a db (collection-name-only check)"
         );
+    }
+
+    #[test]
+    fn valid_database_name_enforces_mongodb_rules() {
+        let ok = |name: &str| {
+            op_valid_database_name(json!({ "name": name })).unwrap()["valid"]
+                .as_bool()
+                .unwrap()
+        };
+        assert!(ok("myapp"));
+        assert!(ok("reporting_2025"));
+        // Unlike collections, a `.` is forbidden (and so is a space).
+        for (name, want) in [
+            ("", "empty"),
+            ("has.dot", "/ \\ ."),
+            ("has space", "space"),
+            ("with$dollar", "$"),
+            ("a/b", "/ \\ ."),
+            ("pipe|name", "|"),
+        ] {
+            let v = op_valid_database_name(json!({ "name": name })).unwrap();
+            assert_eq!(v["valid"], json!(false), "{name} should be invalid");
+            assert!(
+                v["reason"].as_str().unwrap().contains(want),
+                "{name}: reason `{}` should mention `{want}`",
+                v["reason"]
+            );
+        }
+        // Null character rejected; 63 chars ok, 64 fails (fewer than 64).
+        assert!(!ok("a\0b"));
+        assert!(ok(&"a".repeat(63)));
+        let long = op_valid_database_name(json!({"name": "a".repeat(64)})).unwrap();
+        assert_eq!(long["valid"], json!(false));
+        assert!(long["reason"].as_str().unwrap().contains("64"));
+        assert!(op_valid_database_name(json!({})).is_err());
     }
 
     #[test]
