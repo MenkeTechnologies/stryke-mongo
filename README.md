@@ -246,6 +246,7 @@ Mongo::ping              %opts → 1 | ""
 Mongo::parse_connection_string($uri) → { scheme, srv, user, password, hosts:[{host,port}], database, params }
 Mongo::parse_namespace($ns)          → { db, collection }   # split on first dot
 Mongo::build_namespace($db, $coll)   → $ns                 # join db.collection; inverse of parse_namespace
+Mongo::valid_collection_name($name, $db?) → { name, valid, reason }   # MongoDB rules: no $, no null, not empty, no system. prefix; 255-byte ns with $db
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes

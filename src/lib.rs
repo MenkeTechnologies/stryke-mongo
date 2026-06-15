@@ -758,6 +758,34 @@ fn op_build_namespace(opts: Value) -> Result<Value> {
     Ok(json!({"namespace": format!("{db}.{collection}")}))
 }
 
+/// Validate a MongoDB collection name against the server's documented hard
+/// rules: not empty, no `$`, no null character, and not the reserved `system.`
+/// prefix. When a `db` is supplied, the combined `db.collection` namespace must
+/// also be ≤ 255 bytes (the unsharded-collection limit). The "should start with
+/// a letter/underscore" guidance is a convention the server does not enforce, so
+/// it is not checked here. Returns `{name, valid, reason}`. Pure.
+fn op_valid_collection_name(opts: Value) -> Result<Value> {
+    let name = opts
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing name"))?;
+    let reason: Option<&str> = if name.is_empty() {
+        Some("must not be empty")
+    } else if name.contains('$') {
+        Some("must not contain '$'")
+    } else if name.contains('\0') {
+        Some("must not contain a null character")
+    } else if name.starts_with("system.") {
+        Some("must not begin with the reserved `system.` prefix")
+    } else if matches!(opts.get("db").and_then(Value::as_str), Some(db) if db.len() + 1 + name.len() > 255)
+    {
+        Some("namespace (db.collection) must be at most 255 bytes")
+    } else {
+        None
+    };
+    Ok(json!({"name": name, "valid": reason.is_none(), "reason": reason}))
+}
+
 /// Whether a string is a valid 24-hex-char MongoDB ObjectId. Validation is
 /// delegated to `bson::oid::ObjectId`, so it tracks the library exactly.
 fn op_is_valid_objectid(opts: Value) -> Result<Value> {
@@ -1002,6 +1030,11 @@ pub extern "C" fn mongo__parse_namespace(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__build_namespace(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_build_namespace(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__valid_collection_name(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_collection_name(opts) })
 }
 
 #[no_mangle]
@@ -1681,6 +1714,51 @@ mod tests {
         // Missing/empty parts error.
         assert!(op_build_namespace(json!({"db": "shop"})).is_err());
         assert!(op_build_namespace(json!({"db": "", "collection": "c"})).is_err());
+    }
+
+    #[test]
+    fn valid_collection_name_enforces_mongodb_hard_rules() {
+        let ok = |name: &str| {
+            op_valid_collection_name(json!({ "name": name })).unwrap()["valid"]
+                .as_bool()
+                .unwrap()
+        };
+        // Ordinary names — including a leading digit (server allows it) and dots.
+        assert!(ok("orders"));
+        assert!(ok("orders.2025"), "dots are allowed in collection names");
+        assert!(ok("123abc"), "leading digit is not a hard rule");
+        assert!(ok("_private"));
+        // Hard rejections.
+        for (name, want) in [
+            ("", "empty"),
+            ("with$dollar", "'$'"),
+            ("system.users", "system."),
+        ] {
+            let v = op_valid_collection_name(json!({ "name": name })).unwrap();
+            assert_eq!(v["valid"], json!(false), "{name} should be invalid");
+            assert!(
+                v["reason"].as_str().unwrap().contains(want),
+                "{name}: reason `{}` should mention `{want}`",
+                v["reason"]
+            );
+        }
+        // Null character is rejected.
+        assert_eq!(
+            op_valid_collection_name(json!({"name": "a\0b"})).unwrap()["valid"],
+            json!(false)
+        );
+        // Namespace length is checked only when a db is supplied. "mydb" + "." +
+        // 260 chars = 265 bytes, over the 255-byte limit.
+        let long = "c".repeat(260);
+        assert!(
+            !op_valid_collection_name(json!({"name": long, "db": "mydb"})).unwrap()["valid"]
+                .as_bool()
+                .unwrap()
+        );
+        assert!(
+            ok(&long),
+            "the same long name is fine without a db (collection-name-only check)"
+        );
     }
 
     #[test]

@@ -354,6 +354,15 @@ fn Mongo::build_namespace ($db, $collection) {
         mongo__build_namespace(to_json({ db => $db, collection => $collection })))->{namespace}
 }
 
+## Validate a MongoDB collection $name against the server's hard rules: not
+## empty, no "$", no null character, not the reserved "system." prefix. Pass an
+## optional $db to also enforce the 255-byte db.collection namespace limit.
+## Returns a hashref { name, valid, reason } (reason undef when valid).
+fn Mongo::valid_collection_name ($name, $db = undef) {
+    Mongo::_decode("valid_collection_name",
+        mongo__valid_collection_name(to_json({ name => $name, db => $db })))
+}
+
 ## True if $id is a valid 24-hex-char ObjectId (validated via bson).
 fn Mongo::is_valid_objectid ($id) {
     Mongo::_decode("is_valid_objectid", mongo__is_valid_objectid(to_json({ id => $id })))->{valid}
