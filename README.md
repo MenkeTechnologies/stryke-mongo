@@ -249,6 +249,7 @@ Mongo::build_namespace($db, $coll)   → $ns                 # join db.collectio
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes
+Mongo::objectid_from_time(%opts)     → $oid   # {epoch_seconds|epoch_millis|iso} → boundary ObjectId (createFromTime); inverse of objectid_timestamp
 ```
 
 Unlike a SQL DSN, `parse_connection_string` returns a host **list** (replica

@@ -797,6 +797,34 @@ fn op_objectid_timestamp(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Build a boundary ObjectId from a timestamp — the official driver's
+/// `ObjectId.createFromTime`: the first 4 bytes carry the second-precision
+/// timestamp (big-endian) and the remaining 8 bytes are zero, giving the
+/// smallest ObjectId for that second. Used for `_id` range queries by creation
+/// time (`{_id: {$gte: createFromTime(t)}}`). opts: one of `epoch_seconds`,
+/// `epoch_millis`, or `iso` (RFC 3339). Returns `{oid, epoch_seconds}`. Inverse
+/// (at second precision) of `objectid_timestamp`. Pure.
+fn op_objectid_from_time(opts: Value) -> Result<Value> {
+    let seconds = if let Some(s) = opts.get("epoch_seconds").and_then(Value::as_i64) {
+        s
+    } else if let Some(ms) = opts.get("epoch_millis").and_then(Value::as_i64) {
+        ms.div_euclid(1000)
+    } else if let Some(iso) = opts.get("iso").and_then(Value::as_str) {
+        bson::DateTime::parse_rfc3339_str(iso)
+            .map_err(|e| anyhow!("invalid iso timestamp `{iso}`: {e}"))?
+            .timestamp_millis()
+            .div_euclid(1000)
+    } else {
+        return Err(anyhow!("missing epoch_seconds, epoch_millis, or iso"));
+    };
+    let secs = u32::try_from(seconds)
+        .map_err(|_| anyhow!("timestamp out of ObjectId range (0..=4294967295s): {seconds}"))?;
+    let mut bytes = [0u8; 12];
+    bytes[..4].copy_from_slice(&secs.to_be_bytes());
+    let oid = bson::oid::ObjectId::from_bytes(bytes);
+    Ok(json!({ "oid": oid.to_hex(), "epoch_seconds": seconds }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -989,6 +1017,11 @@ pub extern "C" fn mongo__new_objectid(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__objectid_timestamp(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_objectid_timestamp(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__objectid_from_time(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_objectid_from_time(opts) })
 }
 
 #[cfg(test)]
@@ -1706,5 +1739,33 @@ mod tests {
             "new ObjectId carries a recent timestamp"
         );
         assert!(op_objectid_timestamp(json!({"id": "nothex"})).is_err());
+    }
+
+    #[test]
+    fn objectid_from_time_builds_boundary_id_and_inverts_timestamp() {
+        // createFromTime(1300816219) — timestamp in first 4 bytes, rest zero.
+        let v = op_objectid_from_time(json!({"epoch_seconds": 1_300_816_219i64})).unwrap();
+        assert_eq!(v["oid"], json!("4d88e15b0000000000000000"));
+        // Round-trips with objectid_timestamp at second precision.
+        let back = op_objectid_timestamp(json!({"id": v["oid"].clone()})).unwrap();
+        assert_eq!(back["epoch_seconds"], json!(1_300_816_219i64));
+        // epoch_millis is floored to whole seconds.
+        assert_eq!(
+            op_objectid_from_time(json!({"epoch_millis": 1_300_816_219_999i64})).unwrap()["oid"],
+            json!("4d88e15b0000000000000000")
+        );
+        // ISO input agrees with the epoch form.
+        assert_eq!(
+            op_objectid_from_time(json!({"iso": "2011-03-22T17:50:19Z"})).unwrap()["oid"],
+            json!("4d88e15b0000000000000000")
+        );
+        // Epoch zero → all-zero id.
+        assert_eq!(
+            op_objectid_from_time(json!({"epoch_seconds": 0})).unwrap()["oid"],
+            json!("000000000000000000000000")
+        );
+        // Out-of-range and missing inputs reject.
+        assert!(op_objectid_from_time(json!({"epoch_seconds": 5_000_000_000i64})).is_err());
+        assert!(op_objectid_from_time(json!({})).is_err());
     }
 }

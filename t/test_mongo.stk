@@ -111,6 +111,12 @@ assert_eq $ts->{epoch_seconds}, 1300816219,       "objectid_timestamp: epoch sec
 assert_eq $ts->{iso}, "2011-03-22T17:50:19Z",      "objectid_timestamp: ISO string"
 assert_dies fn { Mongo::objectid_timestamp("nothex") }, "objectid_timestamp rejects a non-ObjectId"
 
+# objectid_from_time: build a boundary ObjectId (driver's createFromTime).
+assert_eq Mongo::objectid_from_time(epoch_seconds => 1300816219), "4d88e15b0000000000000000", "objectid_from_time: timestamp in leading 4 bytes, rest zero"
+assert_eq Mongo::objectid_from_time(iso => "2011-03-22T17:50:19Z"), "4d88e15b0000000000000000", "objectid_from_time: iso agrees with epoch"
+assert_eq Mongo::objectid_timestamp(Mongo::objectid_from_time(epoch_seconds => 1300816219))->{epoch_seconds}, 1300816219, "objectid_from_time: round-trips objectid_timestamp"
+assert_dies fn { Mongo::objectid_from_time(epoch_seconds => 5000000000) }, "objectid_from_time: rejects out-of-range timestamp"
+
 assert_dies fn { Mongo::parse_connection_string("postgres://localhost/x") }, "parse_connection_string rejects non-mongo scheme"
 
 test_run

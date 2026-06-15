@@ -370,3 +370,12 @@ fn Mongo::new_objectid {
 fn Mongo::objectid_timestamp ($id) {
     Mongo::_decode("objectid_timestamp", mongo__objectid_timestamp(to_json({ id => $id })))
 }
+
+## Build a boundary ObjectId from a timestamp (the driver's
+## ObjectId.createFromTime) — timestamp in the first 4 bytes, rest zero, the
+## smallest id for that second. Use for _id range queries by creation time.
+## %opts: one of epoch_seconds, epoch_millis, or iso (RFC 3339). Returns the
+## 24-hex id. Inverse (second precision) of objectid_timestamp.
+fn Mongo::objectid_from_time (%opts) {
+    Mongo::_decode("objectid_from_time", mongo__objectid_from_time(to_json(\%opts)))->{oid}
+}
