@@ -102,6 +102,15 @@ assert_eq $rt->{params}{replicaSet}, "rs0",  "build_connection_string: round-tri
 assert_eq Mongo::build_connection_string(srv => 1, hosts => ["cluster0.mongodb.net"], params => { retryWrites => "true" }), "mongodb+srv://cluster0.mongodb.net/?retryWrites=true", "build_connection_string: srv + options-only path"
 assert_dies fn { Mongo::build_connection_string(database => "x") }, "build_connection_string: requires hosts"
 
+# valid_connection_string: non-throwing host-rule validator.
+assert_eq Mongo::valid_connection_string("mongodb://h1:27017,h2:27017/db")->{valid}, 1, "valid_connection_string: standard multi-host is valid"
+assert_eq Mongo::valid_connection_string("mongodb+srv://user:pw\@cluster0.mongodb.net/db")->{valid}, 1, "valid_connection_string: srv single host is valid"
+val $vp = Mongo::valid_connection_string("mongodb+srv://cluster0.mongodb.net:27017/db")
+assert_eq $vp->{valid}, 0, "valid_connection_string: srv rejects a port"
+assert_match qr/port/, $vp->{reason}, "valid_connection_string: reason names the port rule"
+assert_eq Mongo::valid_connection_string("mongodb+srv://a.net,b.net/db")->{valid}, 0, "valid_connection_string: srv rejects multiple hosts"
+assert_eq Mongo::valid_connection_string("postgres://localhost/x")->{valid}, 0, "valid_connection_string: rejects a non-mongo scheme"
+
 # redact_connection_string: mask the password for safe logging.
 # `\@` escapes the at-sign so stryke does not array-interpolate it.
 assert_eq Mongo::redact_connection_string("mongodb://app:s3cret\@h1:27017/shop"), "mongodb://app:***\@h1:27017/shop", "redact: masks the password"

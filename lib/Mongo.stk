@@ -350,6 +350,16 @@ fn Mongo::build_connection_string (%opts) {
         mongo__build_connection_string(to_json(\%opts)))->{uri}
 }
 
+## Non-throwing structural validator for a connection $uri — the predicate
+## companion to parse_connection_string. Beyond a successful parse it enforces
+## the host rules: standard mongodb:// needs at least one host; mongodb+srv://
+## needs exactly one host and no port. Returns a hashref { uri, valid, reason }
+## (reason is undef when valid).
+fn Mongo::valid_connection_string ($uri) {
+    Mongo::_decode("valid_connection_string",
+        mongo__valid_connection_string(to_json({ uri => $uri })))
+}
+
 ## Mask the password in a connection $uri (default mask "***") so it can be
 ## safely logged — only the user:password@ segment is rewritten; the rest is
 ## preserved byte-for-byte. %opts: mask. Returns the redacted URI string.

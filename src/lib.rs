@@ -819,6 +819,39 @@ fn op_build_connection_string(opts: Value) -> Result<Value> {
     Ok(json!({ "uri": uri }))
 }
 
+/// Non-throwing structural validator for a MongoDB connection URI — the
+/// predicate companion to `parse_connection_string` (which throws). Beyond a
+/// successful parse it enforces the host rules the parser is lax about: a
+/// standard `mongodb://` URI needs at least one host, and a `mongodb+srv://` URI
+/// must have exactly one host and no port (per the DNS-seed-list format). opts:
+/// `uri` (or `dsn`) required. Returns `{uri, valid, reason}` — `reason` is null
+/// when valid. Pure.
+fn op_valid_connection_string(opts: Value) -> Result<Value> {
+    let uri = opts
+        .get("uri")
+        .or_else(|| opts.get("dsn"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing uri"))?;
+    let reason: Option<String> = match op_parse_connection_string(opts.clone()) {
+        Err(e) => Some(e.to_string()),
+        Ok(parsed) => {
+            let hosts = parsed.get("hosts").and_then(Value::as_array);
+            let n = hosts.map_or(0, Vec::len);
+            let srv = parsed.get("srv").and_then(Value::as_bool).unwrap_or(false);
+            if n == 0 {
+                Some("at least one host is required".into())
+            } else if srv && n != 1 {
+                Some("mongodb+srv requires exactly one host".into())
+            } else if srv && hosts.is_some_and(|h| !h[0].get("port").is_none_or(Value::is_null)) {
+                Some("mongodb+srv must not specify a port".into())
+            } else {
+                None
+            }
+        }
+    };
+    Ok(json!({ "uri": uri, "valid": reason.is_none(), "reason": reason }))
+}
+
 /// Replace the password in a MongoDB connection URI with a mask (`***` by
 /// default) so the URI can be safely logged. Only the `user:password@` segment
 /// is rewritten — the scheme, hosts, database, and query options are preserved
@@ -1338,6 +1371,11 @@ pub extern "C" fn mongo__parse_connection_string(args: *const c_char) -> *const 
 #[no_mangle]
 pub extern "C" fn mongo__build_connection_string(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_build_connection_string(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__valid_connection_string(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_connection_string(opts) })
 }
 
 #[no_mangle]
@@ -2036,6 +2074,42 @@ mod tests {
         assert!(op_parse_connection_string(json!({"uri": "postgres://localhost/x"})).is_err());
         assert!(op_parse_connection_string(json!({"uri": "h1:27017"})).is_err());
         assert!(op_parse_connection_string(json!({})).is_err());
+    }
+
+    #[test]
+    fn valid_connection_string_enforces_host_rules() {
+        let v = |uri: &str| op_valid_connection_string(json!({ "uri": uri })).unwrap();
+        // Standard URIs with one or many hosts are valid.
+        assert_eq!(v("mongodb://h1:27017/db")["valid"], json!(true));
+        assert_eq!(
+            v("mongodb://u:p@h1:27017,h2:27018/db")["valid"],
+            json!(true)
+        );
+        // SRV with exactly one host and no port is valid.
+        assert_eq!(
+            v("mongodb+srv://user:pw@server.example.com/db")["valid"],
+            json!(true)
+        );
+        // A bad scheme / missing `://` fails the underlying parse.
+        assert_eq!(v("postgres://localhost/x")["valid"], json!(false));
+        assert_eq!(v("h1:27017")["valid"], json!(false));
+        // SRV with a port is rejected.
+        let port = v("mongodb+srv://server.example.com:27017/db");
+        assert_eq!(port["valid"], json!(false));
+        assert!(port["reason"].as_str().unwrap().contains("port"));
+        // SRV with two hosts is rejected.
+        let two = v("mongodb+srv://a.example.com,b.example.com/db");
+        assert_eq!(two["valid"], json!(false));
+        assert!(two["reason"].as_str().unwrap().contains("exactly one host"));
+        // A standard URI with no host is rejected.
+        let none = v("mongodb:///db");
+        assert_eq!(none["valid"], json!(false));
+        assert!(none["reason"]
+            .as_str()
+            .unwrap()
+            .contains("at least one host"));
+        // Missing uri is an error (not a verdict).
+        assert!(op_valid_connection_string(json!({})).is_err());
     }
 
     #[test]

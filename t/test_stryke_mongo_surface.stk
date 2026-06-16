@@ -61,6 +61,7 @@ assert_ok exists &Mongo::create_indexes, "Mongo::create_indexes exists"
 # ── pure ObjectId / namespace helpers ──
 assert_ok exists &Mongo::parse_connection_string, "Mongo::parse_connection_string exists"
 assert_ok exists &Mongo::build_connection_string, "Mongo::build_connection_string exists"
+assert_ok exists &Mongo::valid_connection_string, "Mongo::valid_connection_string exists"
 assert_ok exists &Mongo::redact_connection_string, "Mongo::redact_connection_string exists"
 assert_ok exists &Mongo::parse_namespace, "Mongo::parse_namespace exists"
 assert_ok exists &Mongo::build_namespace, "Mongo::build_namespace exists"
