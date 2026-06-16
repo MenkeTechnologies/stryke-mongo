@@ -252,6 +252,7 @@ Mongo::build_namespace($db, $coll)   → $ns                 # join db.collectio
 Mongo::valid_collection_name($name, $db?) → { name, valid, reason }   # MongoDB rules: no $, no null, not empty, no system. prefix; 255-byte ns with $db
 Mongo::valid_database_name($name) → { name, valid, reason }   # MongoDB db rules: not empty, <64 chars, no null/space/ /\."$*<>:|?
 Mongo::valid_namespace($ns) → { namespace, valid, reason, database, collection }   # validate a full db.collection in one call (splits on first dot; checks both parts + 255-byte limit)
+Mongo::escape_regex($value) → { value, escaped }   # escape PCRE metacharacters (. ^ $ * + ? ( ) [ ] { } | \) for a literal $regex match
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes
@@ -307,7 +308,8 @@ version/ping, discovery, find/count/aggregate, write paths, index admin,
 and connection-free helpers (`mongo__parse_connection_string`,
 `mongo__build_connection_string`, `mongo__valid_connection_string`,
 `mongo__redact_connection_string`,
-`mongo__parse_namespace`, `mongo__build_namespace`, `mongo__is_valid_objectid`,
+`mongo__parse_namespace`, `mongo__build_namespace`, `mongo__escape_regex`,
+`mongo__is_valid_objectid`,
 `mongo__new_objectid`, `mongo__objectid_timestamp`, `mongo__parse_objectid`). The authoritative
 list is `[ffi].exports` in
 `stryke.toml`.

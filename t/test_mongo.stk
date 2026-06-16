@@ -160,6 +160,14 @@ assert_eq $bad->{valid}, 0,            "valid_namespace: rejects a bad database 
 assert_match qr/database name/, $bad->{reason}, "valid_namespace: reason names the failing part"
 assert_eq Mongo::valid_namespace("myapp.us\$ers")->{valid}, 0, "valid_namespace: rejects a bad collection part"
 
+# escape_regex: backslash-escape PCRE metacharacters for a literal $regex match.
+assert_eq Mongo::escape_regex("plain")->{escaped},   "plain",        "escape_regex: plain text unchanged"
+assert_eq Mongo::escape_regex("a.b")->{escaped},     "a\\.b",        "escape_regex: dot escaped"
+assert_eq Mongo::escape_regex("(x)[y]")->{escaped},  "\\(x\\)\\[y\\]", "escape_regex: parens and brackets escaped"
+assert_eq Mongo::escape_regex("a\\b")->{escaped},    "a\\\\b",       "escape_regex: backslash doubled"
+assert_eq Mongo::escape_regex("\$9.99")->{escaped},  "\\\$9\\.99",   "escape_regex: dollar and dot escaped"
+assert_dies fn { Mongo::escape_regex() }, "escape_regex: dies without a value"
+
 val $oid = Mongo::new_objectid()
 assert_eq length($oid), 24, "new_objectid: 24 hex chars"
 assert_eq Mongo::is_valid_objectid($oid), 1, "is_valid_objectid: accepts a fresh oid"

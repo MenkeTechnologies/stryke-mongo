@@ -1,6 +1,6 @@
 [package]
 name = "stryke-mongo"
-version = "0.16.0"
+version = "0.17.0"
 description = "MongoDB client for stryke. Find / insert / update / delete / aggregate / index admin against mongo 5.0+. cdylib loaded in-process — persistent mongodb::Client cache across calls."
 authors = ["MenkeTechnologies"]
 license = "MIT"
@@ -52,6 +52,7 @@ exports = [
     "mongo__valid_collection_name",
     "mongo__valid_database_name",
     "mongo__valid_namespace",
+    "mongo__escape_regex",
     "mongo__is_valid_objectid",
     "mongo__new_objectid",
     "mongo__objectid_timestamp",

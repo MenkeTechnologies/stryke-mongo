@@ -407,6 +407,14 @@ fn Mongo::valid_namespace ($namespace) {
     Mongo::_decode("valid_namespace", mongo__valid_namespace(to_json({ namespace => $namespace })))
 }
 
+## Escape the PCRE regex metacharacters in $value (. ^ $ * + ? ( ) [ ] { } | \)
+## so it matches itself literally inside a MongoDB $regex query — e.g. build a
+## prefix match with "^" . Mongo::escape_regex($s). Returns a hashref
+## { value, escaped }.
+fn Mongo::escape_regex ($value) {
+    Mongo::_decode("escape_regex", mongo__escape_regex(to_json({ value => $value })))
+}
+
 ## True if $id is a valid 24-hex-char ObjectId (validated via bson).
 fn Mongo::is_valid_objectid ($id) {
     Mongo::_decode("is_valid_objectid", mongo__is_valid_objectid(to_json({ id => $id })))->{valid}

@@ -1023,6 +1023,30 @@ fn op_valid_namespace(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Escape the PCRE regular-expression metacharacters in `value` so it matches
+/// itself literally inside a MongoDB `$regex` query — each of
+/// `. ^ $ * + ? ( ) [ ] { } | \` is backslash-prefixed. Use it to build a literal
+/// or prefix `$regex` from user input without the input acting as a pattern (e.g.
+/// `{ name: { $regex: "^" + escape_regex(s) } }` for a prefix match). opts:
+/// `value` (required). Returns `{value, escaped}`. Pure.
+fn op_escape_regex(opts: Value) -> Result<Value> {
+    let value = opts
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing value"))?;
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        if matches!(
+            c,
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    Ok(json!({ "value": value, "escaped": out }))
+}
+
 /// Whether a string is a valid 24-hex-char MongoDB ObjectId. Validation is
 /// delegated to `bson::oid::ObjectId`, so it tracks the library exactly.
 fn op_is_valid_objectid(opts: Value) -> Result<Value> {
@@ -1409,6 +1433,11 @@ pub extern "C" fn mongo__valid_database_name(args: *const c_char) -> *const c_ch
 #[no_mangle]
 pub extern "C" fn mongo__valid_namespace(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_valid_namespace(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__escape_regex(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_escape_regex(opts) })
 }
 
 #[no_mangle]
@@ -2342,6 +2371,30 @@ mod tests {
             json!(false)
         );
         assert!(op_valid_namespace(json!({})).is_err());
+    }
+
+    #[test]
+    fn escape_regex_escapes_pcre_metacharacters() {
+        let e = |s: &str| {
+            op_escape_regex(json!({ "value": s })).unwrap()["escaped"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // Plain text is unchanged.
+        assert_eq!(e("hello"), "hello");
+        // Every metacharacter is backslash-escaped.
+        assert_eq!(e("a.b"), "a\\.b");
+        assert_eq!(e("1+1=2"), "1\\+1=2");
+        assert_eq!(e("(x)[y]{z}"), "\\(x\\)\\[y\\]\\{z\\}");
+        assert_eq!(e("^start$"), "\\^start\\$");
+        assert_eq!(e("a|b*c?"), "a\\|b\\*c\\?");
+        // A literal backslash is doubled.
+        assert_eq!(e("a\\b"), "a\\\\b");
+        // Realistic: a price string used as a literal $regex.
+        assert_eq!(e("$9.99 (USD)"), "\\$9\\.99 \\(USD\\)");
+        assert_eq!(e(""), "");
+        assert!(op_escape_regex(json!({})).is_err());
     }
 
     #[test]
