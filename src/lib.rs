@@ -819,6 +819,37 @@ fn op_build_connection_string(opts: Value) -> Result<Value> {
     Ok(json!({ "uri": uri }))
 }
 
+/// Replace the password in a MongoDB connection URI with a mask (`***` by
+/// default) so the URI can be safely logged. Only the `user:password@` segment
+/// is rewritten — the scheme, hosts, database, and query options are preserved
+/// byte-for-byte (unlike a parse-then-build round trip, which would normalize
+/// param order and encoding). A URI with no password is returned unchanged.
+/// opts: `uri` (or `dsn`) required, optional `mask` (default `***`). Returns
+/// `{redacted, had_password}`. Pure.
+fn op_redact_connection_string(opts: Value) -> Result<Value> {
+    let uri = opts
+        .get("uri")
+        .or_else(|| opts.get("dsn"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing uri"))?;
+    let mask = opts.get("mask").and_then(Value::as_str).unwrap_or("***");
+    let (scheme, rest) = uri
+        .split_once("://")
+        .ok_or_else(|| anyhow!("not a MongoDB URI (missing `://`): {uri}"))?;
+    // The authority ends at the first '/' or '?' after the scheme.
+    let auth_end = rest.find(['/', '?']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(auth_end);
+    let (redacted, had_password) = match authority.rsplit_once('@') {
+        // Split userinfo on the FIRST ':' — a password may itself be empty.
+        Some((userinfo, hosts)) => match userinfo.split_once(':') {
+            Some((user, _pw)) => (format!("{scheme}://{user}:{mask}@{hosts}{tail}"), true),
+            None => (uri.to_string(), false),
+        },
+        None => (uri.to_string(), false),
+    };
+    Ok(json!({ "redacted": redacted, "had_password": had_password }))
+}
+
 /// Split a `db.collection` namespace on its FIRST dot (collection names may
 /// contain dots; database names may not). Pure.
 fn op_parse_namespace(opts: Value) -> Result<Value> {
@@ -1180,6 +1211,14 @@ pub extern "C" fn mongo__parse_connection_string(args: *const c_char) -> *const 
 #[no_mangle]
 pub extern "C" fn mongo__build_connection_string(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_build_connection_string(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__redact_connection_string(args: *const c_char) -> *const c_char {
+    ffi_call_async(
+        args,
+        |opts| async move { op_redact_connection_string(opts) },
+    )
 }
 
 #[no_mangle]
@@ -1902,6 +1941,43 @@ mod tests {
         // Missing/empty hosts reject.
         assert!(op_build_connection_string(json!({})).is_err());
         assert!(op_build_connection_string(json!({"hosts": []})).is_err());
+    }
+
+    #[test]
+    fn redact_connection_string_masks_only_the_password() {
+        let red = |u: &str| op_redact_connection_string(json!({ "uri": u })).unwrap();
+        // Password masked; everything else byte-for-byte identical.
+        let v = red("mongodb://app:s3cret@h1:27017/shop");
+        assert_eq!(v["redacted"], json!("mongodb://app:***@h1:27017/shop"));
+        assert_eq!(v["had_password"], json!(true));
+        // srv + query options preserved exactly (no param reordering/re-encoding).
+        assert_eq!(
+            red("mongodb+srv://u:p@cluster0.mongodb.net/db?retryWrites=true&w=majority")
+                ["redacted"],
+            json!("mongodb+srv://u:***@cluster0.mongodb.net/db?retryWrites=true&w=majority")
+        );
+        // Multiple hosts.
+        assert_eq!(
+            red("mongodb://u:p@h1:27017,h2:27018/db")["redacted"],
+            json!("mongodb://u:***@h1:27017,h2:27018/db")
+        );
+        // No password, or no userinfo at all → returned unchanged.
+        let np = red("mongodb://app@h1/db");
+        assert_eq!(np["redacted"], json!("mongodb://app@h1/db"));
+        assert_eq!(np["had_password"], json!(false));
+        assert_eq!(
+            red("mongodb://h1:27017/shop")["redacted"],
+            json!("mongodb://h1:27017/shop")
+        );
+        // A custom mask is honored.
+        assert_eq!(
+            op_redact_connection_string(json!({"uri": "mongodb://a:b@h/db", "mask": "REDACTED"}))
+                .unwrap()["redacted"],
+            json!("mongodb://a:REDACTED@h/db")
+        );
+        // Not a URI / missing uri error.
+        assert!(op_redact_connection_string(json!({"uri": "no-scheme"})).is_err());
+        assert!(op_redact_connection_string(json!({})).is_err());
     }
 
     #[test]

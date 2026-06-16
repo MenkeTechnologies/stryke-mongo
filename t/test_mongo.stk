@@ -102,6 +102,15 @@ assert_eq $rt->{params}{replicaSet}, "rs0",  "build_connection_string: round-tri
 assert_eq Mongo::build_connection_string(srv => 1, hosts => ["cluster0.mongodb.net"], params => { retryWrites => "true" }), "mongodb+srv://cluster0.mongodb.net/?retryWrites=true", "build_connection_string: srv + options-only path"
 assert_dies fn { Mongo::build_connection_string(database => "x") }, "build_connection_string: requires hosts"
 
+# redact_connection_string: mask the password for safe logging.
+# `\@` escapes the at-sign so stryke does not array-interpolate it.
+assert_eq Mongo::redact_connection_string("mongodb://app:s3cret\@h1:27017/shop"), "mongodb://app:***\@h1:27017/shop", "redact: masks the password"
+assert_eq Mongo::redact_connection_string("mongodb+srv://u:p\@cluster0.mongodb.net/db?retryWrites=true"), "mongodb+srv://u:***\@cluster0.mongodb.net/db?retryWrites=true", "redact: srv + options preserved"
+assert_eq Mongo::redact_connection_string("mongodb://h1:27017/shop"), "mongodb://h1:27017/shop", "redact: no userinfo → unchanged"
+assert_eq Mongo::redact_connection_string("mongodb://app\@h1/db"), "mongodb://app\@h1/db", "redact: user without password → unchanged"
+assert_eq Mongo::redact_connection_string("mongodb://a:b\@h/db", mask => "X"), "mongodb://a:X\@h/db", "redact: custom mask"
+assert_dies fn { Mongo::redact_connection_string("no-scheme") }, "redact: rejects a non-URI"
+
 val $ns = Mongo::parse_namespace("shop.orders.2025")
 assert_eq $ns->{db},         "shop",       "parse_namespace: db"
 assert_eq $ns->{collection}, "orders.2025", "parse_namespace: collection keeps dots"

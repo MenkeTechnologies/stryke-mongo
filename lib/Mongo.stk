@@ -350,6 +350,14 @@ fn Mongo::build_connection_string (%opts) {
         mongo__build_connection_string(to_json(\%opts)))->{uri}
 }
 
+## Mask the password in a connection $uri (default mask "***") so it can be
+## safely logged — only the user:password@ segment is rewritten; the rest is
+## preserved byte-for-byte. %opts: mask. Returns the redacted URI string.
+fn Mongo::redact_connection_string ($uri, %opts) {
+    Mongo::_decode("redact_connection_string",
+        mongo__redact_connection_string(to_json({ uri => $uri, mask => $opts{mask} })))->{redacted}
+}
+
 ## Split a "db.collection" namespace on its first dot → { db, collection }.
 fn Mongo::parse_namespace ($namespace) {
     Mongo::_decode("parse_namespace", mongo__parse_namespace(to_json({ namespace => $namespace })))
