@@ -158,6 +158,14 @@ assert_eq $po->{counter},       4271561,     "parse_objectid: counter (bytes 9-1
 assert_eq $po->{hex},           "4d88e15b60f486e428412dc9", "parse_objectid: hex echoed"
 assert_dies fn { Mongo::parse_objectid("nothex") }, "parse_objectid: rejects a non-ObjectId"
 
+# build_objectid: reassemble an ObjectId from its parts (inverse of parse_objectid).
+assert_eq Mongo::build_objectid(1300816219, "60f486e428", 4271561)->{oid}, "4d88e15b60f486e428412dc9", "build_objectid: reassembles the canonical vector"
+# Round-trips parse_objectid.
+val $bp = Mongo::parse_objectid("4d88e15b60f486e428412dc9")
+assert_eq Mongo::build_objectid($bp->{epoch_seconds}, $bp->{random}, $bp->{counter})->{oid}, "4d88e15b60f486e428412dc9", "build_objectid: round-trips parse_objectid"
+assert_dies fn { Mongo::build_objectid(1, "abc", 0) }, "build_objectid: random must be 10 hex chars"
+assert_dies fn { Mongo::build_objectid(1, "0000000000", 16777216) }, "build_objectid: counter out of 24-bit range"
+
 # objectid_from_time: build a boundary ObjectId (driver's createFromTime).
 assert_eq Mongo::objectid_from_time(epoch_seconds => 1300816219), "4d88e15b0000000000000000", "objectid_from_time: timestamp in leading 4 bytes, rest zero"
 assert_eq Mongo::objectid_from_time(iso => "2011-03-22T17:50:19Z"), "4d88e15b0000000000000000", "objectid_from_time: iso agrees with epoch"

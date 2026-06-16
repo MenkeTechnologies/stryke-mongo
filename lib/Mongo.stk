@@ -412,6 +412,15 @@ fn Mongo::parse_objectid ($id) {
     Mongo::_decode("parse_objectid", mongo__parse_objectid(to_json({ id => $id })))
 }
 
+## Reconstruct an ObjectId from its parts — inverse of parse_objectid. $random is
+## a 10-hex-char (5-byte) string, $counter a 0..16777215 (24-bit) integer; both
+## the timestamp and counter are big-endian. Returns a hashref
+## { oid, epoch_seconds, random, counter }.
+fn Mongo::build_objectid ($epoch_seconds, $random, $counter) {
+    Mongo::_decode("build_objectid",
+        mongo__build_objectid(to_json({ epoch_seconds => $epoch_seconds, random => $random, counter => $counter })))
+}
+
 ## Build a boundary ObjectId from a timestamp (the driver's
 ## ObjectId.createFromTime) — timestamp in the first 4 bytes, rest zero, the
 ## smallest id for that second. Use for _id range queries by creation time.

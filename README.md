@@ -254,6 +254,7 @@ Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validate
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes
 Mongo::parse_objectid($id)           → { hex, epoch_seconds, iso, random, counter }   # full decomposition: timestamp + 5-byte random + 3-byte counter
+Mongo::build_objectid($epoch_seconds, $random, $counter) → { oid, epoch_seconds, random, counter }   # inverse: reassemble an ObjectId from its parts (random = 10 hex chars, counter = 24-bit)
 Mongo::objectid_from_time(%opts)     → $oid   # {epoch_seconds|epoch_millis|iso} → boundary ObjectId (createFromTime); inverse of objectid_timestamp
 Mongo::objectid_max_from_time(%opts) → $oid   # same input → LARGEST ObjectId for that second (trailing 0xFF); $lte bound for _id time ranges
 ```

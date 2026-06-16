@@ -1011,6 +1011,54 @@ fn op_parse_objectid(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Reconstruct an ObjectId from its three components — the inverse of
+/// `parse_objectid`. The 12 bytes are `epoch_seconds` (4, big-endian) + `random`
+/// (5 bytes, given as a 10-character hex string) + `counter` (3 bytes,
+/// big-endian). `epoch_seconds` must fit a u32, `random` must be exactly 10 hex
+/// digits, and `counter` must be 0..=16777215 (24 bits). opts: `epoch_seconds`,
+/// `random`, `counter`. Returns `{oid, epoch_seconds, random, counter}`. Pure.
+fn op_build_objectid(opts: Value) -> Result<Value> {
+    let epoch = opts
+        .get("epoch_seconds")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("missing epoch_seconds"))?;
+    let secs = u32::try_from(epoch)
+        .map_err(|_| anyhow!("epoch_seconds out of ObjectId range (0..=4294967295): {epoch}"))?;
+    let random = opts
+        .get("random")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing random (10 hex characters)"))?;
+    if random.len() != 10 {
+        return Err(anyhow!(
+            "random must be 10 hex characters (5 bytes): `{random}`"
+        ));
+    }
+    let counter = opts
+        .get("counter")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| anyhow!("missing counter"))?;
+    if !(0..=0xff_ffff).contains(&counter) {
+        return Err(anyhow!("counter out of range (0..=16777215): {counter}"));
+    }
+    let mut bytes = [0u8; 12];
+    bytes[..4].copy_from_slice(&secs.to_be_bytes());
+    for i in 0..5 {
+        bytes[4 + i] = u8::from_str_radix(&random[i * 2..i * 2 + 2], 16)
+            .map_err(|_| anyhow!("random must be hex: `{random}`"))?;
+    }
+    let c = counter as u32;
+    bytes[9] = ((c >> 16) & 0xff) as u8;
+    bytes[10] = ((c >> 8) & 0xff) as u8;
+    bytes[11] = (c & 0xff) as u8;
+    let oid = bson::oid::ObjectId::from_bytes(bytes);
+    Ok(json!({
+        "oid": oid.to_hex(),
+        "epoch_seconds": epoch,
+        "random": random,
+        "counter": counter,
+    }))
+}
+
 /// Resolve a timestamp from `epoch_seconds`, `epoch_millis`, or an RFC-3339
 /// `iso` string (in that precedence) down to whole epoch seconds. Shared by the
 /// boundary-ObjectId builders.
@@ -1288,6 +1336,11 @@ pub extern "C" fn mongo__objectid_timestamp(args: *const c_char) -> *const c_cha
 #[no_mangle]
 pub extern "C" fn mongo__parse_objectid(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_objectid(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__build_objectid(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_objectid(opts) })
 }
 
 #[no_mangle]
@@ -2199,6 +2252,50 @@ mod tests {
         assert_eq!(zero["random"], json!("0000000000"));
         assert!(op_parse_objectid(json!({"id": "nothex"})).is_err());
         assert!(op_parse_objectid(json!({})).is_err());
+    }
+
+    #[test]
+    fn build_objectid_inverts_parse_objectid() {
+        // Reassemble the canonical test vector from its three parts.
+        let v = op_build_objectid(json!({
+            "epoch_seconds": 1_300_816_219i64,
+            "random": "60f486e428",
+            "counter": 4_271_561i64,
+        }))
+        .unwrap();
+        assert_eq!(v["oid"], json!("4d88e15b60f486e428412dc9"));
+        // Round-trips parse_objectid for several ids (including all-zero).
+        for id in [
+            "4d88e15b60f486e428412dc9",
+            "000000000000000000000000",
+            "ffffffffffffffffffffffff",
+        ] {
+            let p = op_parse_objectid(json!({ "id": id })).unwrap();
+            let rebuilt = op_build_objectid(json!({
+                "epoch_seconds": p["epoch_seconds"],
+                "random": p["random"],
+                "counter": p["counter"],
+            }))
+            .unwrap();
+            assert_eq!(rebuilt["oid"], json!(id), "round-trip for {id}");
+        }
+        // Errors: random not 10 hex chars, counter out of range, epoch overflow.
+        assert!(
+            op_build_objectid(json!({"epoch_seconds": 1, "random": "abc", "counter": 0})).is_err()
+        );
+        assert!(op_build_objectid(
+            json!({"epoch_seconds": 1, "random": "zzzzzzzzzz", "counter": 0})
+        )
+        .is_err());
+        assert!(op_build_objectid(
+            json!({"epoch_seconds": 1, "random": "0000000000", "counter": 16_777_216i64})
+        )
+        .is_err());
+        assert!(op_build_objectid(
+            json!({"epoch_seconds": 5_000_000_000i64, "random": "0000000000", "counter": 0})
+        )
+        .is_err());
+        assert!(op_build_objectid(json!({})).is_err());
     }
 
     #[test]
