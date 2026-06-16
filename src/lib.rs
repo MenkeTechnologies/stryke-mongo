@@ -649,6 +649,21 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Percent-encode every byte that is not an RFC 3986 unreserved char
+/// (`A-Za-z0-9-._~`). The exact inverse of `percent_decode` for the userinfo and
+/// database components of a MongoDB URI, so a parse→build round-trip is stable.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 /// Parse a MongoDB connection string `mongodb[+srv]://[user[:pass]@]host[:port]
 /// [,host2…][/[db][?opts]]` into its parts. Unlike a SQL DSN this carries a
 /// host LIST. Userinfo / db / option values are percent-decoded. Pure — opens
@@ -718,6 +733,90 @@ fn op_parse_connection_string(opts: Value) -> Result<Value> {
         "database": database,
         "params": Value::Object(params),
     }))
+}
+
+/// Assemble a MongoDB connection URI from parts — the inverse of
+/// `parse_connection_string`. opts: `hosts` (required, array of `{host, port?}`
+/// or bare host strings), `srv` (bool) or `scheme`, `user`, `password`,
+/// `database`, and `params` (object). User/password/database are percent-encoded
+/// and param keys sorted for a stable round-trip. Produces
+/// `mongodb[+srv]://[user[:pw]@]host[,…][/db][?k=v…]`. Pure.
+fn op_build_connection_string(opts: Value) -> Result<Value> {
+    // stryke sends booleans as 0/1 numbers, so accept any truthy `srv`.
+    let srv_flag = opts.get("srv").is_some_and(|v| match v {
+        Value::Bool(b) => *b,
+        Value::Number(n) => n.as_f64().is_some_and(|x| x != 0.0),
+        _ => false,
+    });
+    let srv = srv_flag || opts.get("scheme").and_then(Value::as_str) == Some("mongodb+srv");
+    let scheme = if srv { "mongodb+srv" } else { "mongodb" };
+    let hosts = opts
+        .get("hosts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing hosts (array of {{host, port}} or host strings)"))?;
+    if hosts.is_empty() {
+        return Err(anyhow!("hosts is empty"));
+    }
+    let mut host_strs: Vec<String> = Vec::with_capacity(hosts.len());
+    for h in hosts {
+        if let Some(s) = h.as_str() {
+            host_strs.push(s.to_string());
+        } else {
+            let host = h
+                .get("host")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow!("host entry missing host"))?;
+            match h.get("port").and_then(Value::as_u64) {
+                Some(port) => host_strs.push(format!("{host}:{port}")),
+                None => host_strs.push(host.to_string()),
+            }
+        }
+    }
+    let opt = |k: &str| {
+        opts.get(k)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+    };
+    let mut uri = format!("{scheme}://");
+    if let Some(user) = opt("user") {
+        uri.push_str(&percent_encode(user));
+        if let Some(pw) = opt("password") {
+            uri.push(':');
+            uri.push_str(&percent_encode(pw));
+        }
+        uri.push('@');
+    }
+    uri.push_str(&host_strs.join(","));
+    let database = opt("database");
+    // Collect + sort params for a deterministic, round-trippable query string.
+    let params: Vec<(String, String)> = match opts.get("params").and_then(Value::as_object) {
+        Some(m) => {
+            let mut v: Vec<(String, String)> = m
+                .iter()
+                .map(|(k, val)| (k.clone(), val.as_str().unwrap_or("").to_string()))
+                .collect();
+            v.sort_by(|a, b| a.0.cmp(&b.0));
+            v
+        }
+        None => Vec::new(),
+    };
+    // A `/` must precede `?options` even when there is no database path.
+    if database.is_some() || !params.is_empty() {
+        uri.push('/');
+        if let Some(db) = database {
+            uri.push_str(&percent_encode(db));
+        }
+    }
+    if !params.is_empty() {
+        uri.push('?');
+        let query: Vec<String> = params
+            .iter()
+            .map(|(k, v)| format!("{}={}", percent_encode(k), percent_encode(v)))
+            .collect();
+        uri.push_str(&query.join("&"));
+    }
+    Ok(json!({ "uri": uri }))
 }
 
 /// Split a `db.collection` namespace on its FIRST dot (collection names may
@@ -1044,6 +1143,11 @@ pub extern "C" fn mongo__server_status(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__parse_connection_string(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_connection_string(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__build_connection_string(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_connection_string(opts) })
 }
 
 #[no_mangle]
@@ -1714,6 +1818,53 @@ mod tests {
         assert!(op_parse_connection_string(json!({"uri": "postgres://localhost/x"})).is_err());
         assert!(op_parse_connection_string(json!({"uri": "h1:27017"})).is_err());
         assert!(op_parse_connection_string(json!({})).is_err());
+    }
+
+    #[test]
+    fn build_connection_string_inverts_parse_connection_string() {
+        // Bare single host.
+        assert_eq!(
+            op_build_connection_string(json!({"hosts": [{"host": "localhost", "port": 27017}]}))
+                .unwrap()["uri"],
+            json!("mongodb://localhost:27017")
+        );
+        // Multi-host replica set with auth, db, and options.
+        let uri = op_build_connection_string(json!({
+            "user": "admin",
+            "password": "p@ss",
+            "hosts": [{"host": "h1", "port": 27017}, {"host": "h2", "port": 27018}],
+            "database": "shop",
+            "params": {"replicaSet": "rs0", "authSource": "admin"}
+        }))
+        .unwrap()["uri"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        // Password percent-encoded; params sorted (authSource before replicaSet).
+        assert_eq!(
+            uri,
+            "mongodb://admin:p%40ss@h1:27017,h2:27018/shop?authSource=admin&replicaSet=rs0"
+        );
+        // Round-trips through parse_connection_string.
+        let back = op_parse_connection_string(json!({ "uri": uri })).unwrap();
+        assert_eq!(back["user"], json!("admin"));
+        assert_eq!(back["password"], json!("p@ss"), "percent-decoded back");
+        assert_eq!(back["database"], json!("shop"));
+        assert_eq!(back["hosts"].as_array().unwrap().len(), 2);
+        assert_eq!(back["params"]["replicaSet"], json!("rs0"));
+        // SRV scheme; options with no database still get the `/` separator.
+        assert_eq!(
+            op_build_connection_string(json!({
+                "srv": true,
+                "hosts": ["cluster0.mongodb.net"],
+                "params": {"retryWrites": "true"}
+            }))
+            .unwrap()["uri"],
+            json!("mongodb+srv://cluster0.mongodb.net/?retryWrites=true")
+        );
+        // Missing/empty hosts reject.
+        assert!(op_build_connection_string(json!({})).is_err());
+        assert!(op_build_connection_string(json!({"hosts": []})).is_err());
     }
 
     #[test]

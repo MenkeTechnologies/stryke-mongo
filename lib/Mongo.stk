@@ -341,6 +341,15 @@ fn Mongo::parse_connection_string ($uri) {
         mongo__parse_connection_string(to_json({ uri => $uri })))
 }
 
+## Assemble a MongoDB connection URI from parts — inverse of
+## parse_connection_string. %opts: hosts (required, [{host, port?}] or strings),
+## srv/scheme, user, password, database, params. User/password/database are
+## percent-encoded and params sorted. Returns the URI string.
+fn Mongo::build_connection_string (%opts) {
+    Mongo::_decode("build_connection_string",
+        mongo__build_connection_string(to_json(\%opts)))->{uri}
+}
+
 ## Split a "db.collection" namespace on its first dot → { db, collection }.
 fn Mongo::parse_namespace ($namespace) {
     Mongo::_decode("parse_namespace", mongo__parse_namespace(to_json({ namespace => $namespace })))

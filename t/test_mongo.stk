@@ -92,6 +92,16 @@ assert_eq $c->{params}{replicaSet}, "rs0", "parse_connection_string: option"
 val $srv = Mongo::parse_connection_string("mongodb+srv://u:p\@cluster0.mongodb.net/db")
 assert_eq $srv->{srv}, 1, "parse_connection_string: +srv flag"
 
+# build_connection_string: inverse of parse_connection_string.
+assert_eq Mongo::build_connection_string(hosts => [{ host => "localhost", port => 27017 }]), "mongodb://localhost:27017", "build_connection_string: bare host"
+val $built = Mongo::build_connection_string(hosts => [{ host => "h1", port => 27017 }, { host => "h2", port => 27018 }], database => "shop", params => { replicaSet => "rs0" })
+val $rt = Mongo::parse_connection_string($built)
+assert_eq scalar(@{ $rt->{hosts} }), 2,      "build_connection_string: round-trips host list"
+assert_eq $rt->{database},        "shop",    "build_connection_string: round-trips database"
+assert_eq $rt->{params}{replicaSet}, "rs0",  "build_connection_string: round-trips options"
+assert_eq Mongo::build_connection_string(srv => 1, hosts => ["cluster0.mongodb.net"], params => { retryWrites => "true" }), "mongodb+srv://cluster0.mongodb.net/?retryWrites=true", "build_connection_string: srv + options-only path"
+assert_dies fn { Mongo::build_connection_string(database => "x") }, "build_connection_string: requires hosts"
+
 val $ns = Mongo::parse_namespace("shop.orders.2025")
 assert_eq $ns->{db},         "shop",       "parse_namespace: db"
 assert_eq $ns->{collection}, "orders.2025", "parse_namespace: collection keeps dots"
