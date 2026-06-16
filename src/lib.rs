@@ -948,6 +948,38 @@ fn op_objectid_timestamp(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Decompose an ObjectId into its three fields, per the MongoDB layout: a
+/// 4-byte big-endian timestamp (seconds), a 5-byte per-process random value, and
+/// a 3-byte big-endian incrementing counter. Where `objectid_timestamp` returns
+/// only the time, this returns every part. opts: `id` (required). Returns
+/// `{hex, epoch_seconds, iso, random, counter}`. Pure.
+fn op_parse_objectid(opts: Value) -> Result<Value> {
+    let id = opts
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing id"))?;
+    let oid =
+        bson::oid::ObjectId::parse_str(id).map_err(|e| anyhow!("invalid ObjectId `{id}`: {e}"))?;
+    let b = oid.bytes();
+    let epoch_seconds = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    let random = format!(
+        "{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[4], b[5], b[6], b[7], b[8]
+    );
+    let counter = ((b[9] as u32) << 16) | ((b[10] as u32) << 8) | (b[11] as u32);
+    let iso = oid
+        .timestamp()
+        .try_to_rfc3339_string()
+        .map_err(|e| anyhow!("ObjectId timestamp out of range: {e}"))?;
+    Ok(json!({
+        "hex": oid.to_hex(),
+        "epoch_seconds": epoch_seconds,
+        "iso": iso,
+        "random": random,
+        "counter": counter,
+    }))
+}
+
 /// Build a boundary ObjectId from a timestamp — the official driver's
 /// `ObjectId.createFromTime`: the first 4 bytes carry the second-precision
 /// timestamp (big-endian) and the remaining 8 bytes are zero, giving the
@@ -1183,6 +1215,11 @@ pub extern "C" fn mongo__new_objectid(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__objectid_timestamp(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_objectid_timestamp(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__parse_objectid(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_parse_objectid(opts) })
 }
 
 #[no_mangle]
@@ -2032,6 +2069,26 @@ mod tests {
             "new ObjectId carries a recent timestamp"
         );
         assert!(op_objectid_timestamp(json!({"id": "nothex"})).is_err());
+    }
+
+    #[test]
+    fn parse_objectid_decomposes_all_three_fields() {
+        // 4d88e15b | 60f486e428 | 412dc9 → timestamp, 5-byte random, 3-byte counter.
+        let v = op_parse_objectid(json!({"id": "4d88e15b60f486e428412dc9"})).unwrap();
+        assert_eq!(v["hex"], json!("4d88e15b60f486e428412dc9"));
+        assert_eq!(v["epoch_seconds"], json!(1_300_816_219u32));
+        assert_eq!(v["iso"], "2011-03-22T17:50:19Z");
+        assert_eq!(v["random"], json!("60f486e428"), "bytes 4-8 as hex");
+        assert_eq!(v["counter"], json!(0x412dc9u32), "bytes 9-11 big-endian");
+        // The timestamp agrees with objectid_timestamp on the same id.
+        let ts = op_objectid_timestamp(json!({"id": "4d88e15b60f486e428412dc9"})).unwrap();
+        assert_eq!(v["epoch_seconds"].as_i64(), ts["epoch_seconds"].as_i64());
+        // All-zero id → zero fields.
+        let zero = op_parse_objectid(json!({"id": "000000000000000000000000"})).unwrap();
+        assert_eq!(zero["counter"], json!(0));
+        assert_eq!(zero["random"], json!("0000000000"));
+        assert!(op_parse_objectid(json!({"id": "nothex"})).is_err());
+        assert!(op_parse_objectid(json!({})).is_err());
     }
 
     #[test]

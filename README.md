@@ -252,6 +252,7 @@ Mongo::valid_database_name($name) → { name, valid, reason }   # MongoDB db rul
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes
+Mongo::parse_objectid($id)           → { hex, epoch_seconds, iso, random, counter }   # full decomposition: timestamp + 5-byte random + 3-byte counter
 Mongo::objectid_from_time(%opts)     → $oid   # {epoch_seconds|epoch_millis|iso} → boundary ObjectId (createFromTime); inverse of objectid_timestamp
 ```
 
@@ -301,7 +302,7 @@ version/ping, discovery, find/count/aggregate, write paths, index admin,
 and connection-free helpers (`mongo__parse_connection_string`,
 `mongo__build_connection_string`,
 `mongo__parse_namespace`, `mongo__build_namespace`, `mongo__is_valid_objectid`,
-`mongo__new_objectid`, `mongo__objectid_timestamp`). The authoritative
+`mongo__new_objectid`, `mongo__objectid_timestamp`, `mongo__parse_objectid`). The authoritative
 list is `[ffi].exports` in
 `stryke.toml`.
 

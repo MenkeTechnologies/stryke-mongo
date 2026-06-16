@@ -141,6 +141,14 @@ assert_eq $ts->{epoch_seconds}, 1300816219,       "objectid_timestamp: epoch sec
 assert_eq $ts->{iso}, "2011-03-22T17:50:19Z",      "objectid_timestamp: ISO string"
 assert_dies fn { Mongo::objectid_timestamp("nothex") }, "objectid_timestamp rejects a non-ObjectId"
 
+# parse_objectid: decompose all three ObjectId fields.
+val $po = Mongo::parse_objectid("4d88e15b60f486e428412dc9")
+assert_eq $po->{epoch_seconds}, 1300816219, "parse_objectid: timestamp (bytes 0-3)"
+assert_eq $po->{random},        "60f486e428", "parse_objectid: random (bytes 4-8)"
+assert_eq $po->{counter},       4271561,     "parse_objectid: counter (bytes 9-11)"
+assert_eq $po->{hex},           "4d88e15b60f486e428412dc9", "parse_objectid: hex echoed"
+assert_dies fn { Mongo::parse_objectid("nothex") }, "parse_objectid: rejects a non-ObjectId"
+
 # objectid_from_time: build a boundary ObjectId (driver's createFromTime).
 assert_eq Mongo::objectid_from_time(epoch_seconds => 1300816219), "4d88e15b0000000000000000", "objectid_from_time: timestamp in leading 4 bytes, rest zero"
 assert_eq Mongo::objectid_from_time(iso => "2011-03-22T17:50:19Z"), "4d88e15b0000000000000000", "objectid_from_time: iso agrees with epoch"

@@ -396,6 +396,14 @@ fn Mongo::objectid_timestamp ($id) {
     Mongo::_decode("objectid_timestamp", mongo__objectid_timestamp(to_json({ id => $id })))
 }
 
+## Decompose an ObjectId into all three fields — a 4-byte timestamp, a 5-byte
+## per-process random value, and a 3-byte incrementing counter. Where
+## objectid_timestamp returns only the time, this returns every part. Returns a
+## hashref { hex, epoch_seconds, iso, random, counter }.
+fn Mongo::parse_objectid ($id) {
+    Mongo::_decode("parse_objectid", mongo__parse_objectid(to_json({ id => $id })))
+}
+
 ## Build a boundary ObjectId from a timestamp (the driver's
 ## ObjectId.createFromTime) — timestamp in the first 4 bytes, rest zero, the
 ## smallest id for that second. Use for _id range queries by creation time.
