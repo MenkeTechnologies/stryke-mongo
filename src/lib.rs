@@ -940,6 +940,56 @@ fn op_valid_database_name(opts: Value) -> Result<Value> {
     Ok(json!({"name": name, "valid": reason.is_none(), "reason": reason}))
 }
 
+/// Validate a full MongoDB namespace `database.collection` in one call — splits on
+/// the first `.` (a database name can't contain `.`, a collection name can), then
+/// validates the database part with `valid_database_name` and the collection part
+/// with `valid_collection_name`, which also enforces the combined 255-byte
+/// namespace limit. A value with no `.` is rejected. opts: `namespace` (or `name`,
+/// required). Returns `{namespace, valid, reason, database, collection}`. Pure.
+fn op_valid_namespace(opts: Value) -> Result<Value> {
+    let ns = opts
+        .get("namespace")
+        .or_else(|| opts.get("name"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing namespace"))?;
+    let (db, coll) = match ns.split_once('.') {
+        Some(parts) => parts,
+        None => {
+            return Ok(json!({
+                "namespace": ns,
+                "valid": false,
+                "reason": "must be of the form database.collection",
+                "database": Value::Null,
+                "collection": Value::Null,
+            }))
+        }
+    };
+    // Reuse the per-part validators (collection validation also checks the 255-byte
+    // namespace limit when handed the db).
+    let db_v = op_valid_database_name(json!({ "name": db }))?;
+    let coll_v = op_valid_collection_name(json!({ "name": coll, "db": db }))?;
+    let reason = if !db_v["valid"].as_bool().unwrap_or(false) {
+        Some(format!(
+            "database name: {}",
+            db_v["reason"].as_str().unwrap_or("invalid")
+        ))
+    } else if !coll_v["valid"].as_bool().unwrap_or(false) {
+        Some(format!(
+            "collection name: {}",
+            coll_v["reason"].as_str().unwrap_or("invalid")
+        ))
+    } else {
+        None
+    };
+    Ok(json!({
+        "namespace": ns,
+        "valid": reason.is_none(),
+        "reason": reason,
+        "database": db,
+        "collection": coll,
+    }))
+}
+
 /// Whether a string is a valid 24-hex-char MongoDB ObjectId. Validation is
 /// delegated to `bson::oid::ObjectId`, so it tracks the library exactly.
 fn op_is_valid_objectid(opts: Value) -> Result<Value> {
@@ -1316,6 +1366,11 @@ pub extern "C" fn mongo__valid_collection_name(args: *const c_char) -> *const c_
 #[no_mangle]
 pub extern "C" fn mongo__valid_database_name(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_valid_database_name(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__valid_namespace(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_namespace(opts) })
 }
 
 #[no_mangle]
@@ -2174,6 +2229,45 @@ mod tests {
         assert_eq!(long["valid"], json!(false));
         assert!(long["reason"].as_str().unwrap().contains("64"));
         assert!(op_valid_database_name(json!({})).is_err());
+    }
+
+    #[test]
+    fn valid_namespace_splits_and_validates_both_parts() {
+        // A legal namespace, with the parts surfaced.
+        let v = op_valid_namespace(json!({"namespace": "myapp.users"})).unwrap();
+        assert_eq!(v["valid"], json!(true));
+        assert_eq!(v["database"], json!("myapp"));
+        assert_eq!(v["collection"], json!("users"));
+        // The collection part may itself contain dots; the split is on the FIRST dot.
+        let dotted = op_valid_namespace(json!({"namespace": "myapp.sub.coll"})).unwrap();
+        assert_eq!(dotted["valid"], json!(true));
+        assert_eq!(dotted["database"], json!("myapp"));
+        assert_eq!(dotted["collection"], json!("sub.coll"));
+        // No dot at all → not a namespace.
+        let nodot = op_valid_namespace(json!({"namespace": "justdb"})).unwrap();
+        assert_eq!(nodot["valid"], json!(false));
+        assert!(nodot["reason"]
+            .as_str()
+            .unwrap()
+            .contains("database.collection"));
+        // A bad database part is reported as such.
+        let baddb = op_valid_namespace(json!({"namespace": "has space.users"})).unwrap();
+        assert_eq!(baddb["valid"], json!(false));
+        assert!(baddb["reason"].as_str().unwrap().contains("database name"));
+        // A bad collection part ($) is reported as such.
+        let badcoll = op_valid_namespace(json!({"namespace": "myapp.us$ers"})).unwrap();
+        assert_eq!(badcoll["valid"], json!(false));
+        assert!(badcoll["reason"]
+            .as_str()
+            .unwrap()
+            .contains("collection name"));
+        // The combined 255-byte namespace limit (enforced via valid_collection_name).
+        let toolong = format!("db.{}", "c".repeat(255));
+        assert_eq!(
+            op_valid_namespace(json!({ "namespace": toolong })).unwrap()["valid"],
+            json!(false)
+        );
+        assert!(op_valid_namespace(json!({})).is_err());
     }
 
     #[test]

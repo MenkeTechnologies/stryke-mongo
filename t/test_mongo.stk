@@ -139,6 +139,18 @@ val $dl = Mongo::valid_database_name("a" x 64)
 assert_eq $dl->{valid}, 0,                                       "valid_database_name: 64 chars fails (must be fewer than 64)"
 assert_match qr/64/, $dl->{reason},                             "valid_database_name: reason names the limit"
 
+# valid_namespace: validate a full "database.collection" string in one call.
+val $vns = Mongo::valid_namespace("myapp.users")
+assert_ok $vns->{valid},               "valid_namespace: legal db.collection"
+assert_eq $vns->{database},   "myapp",  "valid_namespace: splits the database part"
+assert_eq $vns->{collection}, "users",  "valid_namespace: splits the collection part"
+assert_eq Mongo::valid_namespace("myapp.sub.coll")->{collection}, "sub.coll", "valid_namespace: splits on the first dot only"
+assert_eq Mongo::valid_namespace("justdb")->{valid}, 0,  "valid_namespace: rejects a value with no dot"
+val $bad = Mongo::valid_namespace("has space.users")
+assert_eq $bad->{valid}, 0,            "valid_namespace: rejects a bad database part"
+assert_match qr/database name/, $bad->{reason}, "valid_namespace: reason names the failing part"
+assert_eq Mongo::valid_namespace("myapp.us\$ers")->{valid}, 0, "valid_namespace: rejects a bad collection part"
+
 val $oid = Mongo::new_objectid()
 assert_eq length($oid), 24, "new_objectid: 24 hex chars"
 assert_eq Mongo::is_valid_objectid($oid), 1, "is_valid_objectid: accepts a fresh oid"
