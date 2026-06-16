@@ -216,6 +216,14 @@ assert_eq Mongo::objectid_timestamp(Mongo::objectid_max_from_time(epoch_seconds 
 assert_eq Mongo::objectid_max_from_time(iso => "2011-03-22T17:50:19Z"), "4d88e15bffffffffffffffff", "objectid_max_from_time: iso agrees with epoch"
 assert_dies fn { Mongo::objectid_max_from_time(epoch_seconds => 5000000000) }, "objectid_max_from_time: rejects out-of-range timestamp"
 
+# objectid_range: inclusive _id boundary pair for a creation-time window.
+val $rng = Mongo::objectid_range(+{ epoch_seconds => 1300816219 }, +{ epoch_seconds => 1300902619 })
+assert_eq $rng->{min}, "4d88e15b0000000000000000", "objectid_range: min is from_time(start)"
+assert_eq $rng->{max}, Mongo::objectid_max_from_time(epoch_seconds => 1300902619), "objectid_range: max is max_from_time(end)"
+assert_eq $rng->{start_epoch_seconds}, 1300816219, "objectid_range: reports the start second"
+assert_ok $rng->{max} gt $rng->{min}, "objectid_range: max sorts after min"
+assert_dies fn { Mongo::objectid_range(+{ epoch_seconds => 100 }, +{ epoch_seconds => 50 }) }, "objectid_range: end before start dies"
+assert_dies fn { Mongo::objectid_range(+{ epoch_seconds => 100 }, +{}) }, "objectid_range: a missing time input dies"
 assert_dies fn { Mongo::parse_connection_string("postgres://localhost/x") }, "parse_connection_string rejects non-mongo scheme"
 
 test_run

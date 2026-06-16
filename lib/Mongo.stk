@@ -476,3 +476,14 @@ fn Mongo::objectid_from_time (%opts) {
 fn Mongo::objectid_max_from_time (%opts) {
     Mongo::_decode("objectid_max_from_time", mongo__objectid_max_from_time(to_json(\%opts)))->{oid}
 }
+
+## Build the inclusive _id boundary pair for a creation-time window — the
+## idiomatic way to query documents created between two times without a separate
+## timestamp field. min is objectid_from_time($start), max is
+## objectid_max_from_time($end), so { _id => { $gte => min, $lte => max } } selects
+## exactly the documents created in [start, end]. $start and $end are each a
+## hashref { epoch_seconds | epoch_millis | iso }; end must not precede start.
+## Returns a hashref { start_epoch_seconds, end_epoch_seconds, min, max }.
+fn Mongo::objectid_range ($start, $end) {
+    Mongo::_decode("objectid_range", mongo__objectid_range(to_json({ start => $start, end => $end })))
+}

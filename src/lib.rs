@@ -1263,6 +1263,36 @@ fn op_objectid_max_from_time(opts: Value) -> Result<Value> {
     Ok(json!({ "oid": oid.to_hex(), "epoch_seconds": seconds }))
 }
 
+/// Build the inclusive `_id` boundary pair for a creation-time window — the
+/// idiomatic way to query documents created between two times without a separate
+/// timestamp field. `min` is the smallest ObjectId in the `start` second (its
+/// `objectid_from_time`) and `max` is the largest in the `end` second (its
+/// `objectid_max_from_time`), so `{_id: {$gte: min, $lte: max}}` selects exactly
+/// the documents created in `[start, end]`. opts: `start` and `end`, each an
+/// `{epoch_seconds | epoch_millis | iso}` object; `end` must not precede `start`.
+/// Returns `{start_epoch_seconds, end_epoch_seconds, min, max}` (hex). Pure.
+fn op_objectid_range(opts: Value) -> Result<Value> {
+    let start_opts = opts
+        .get("start")
+        .ok_or_else(|| anyhow!("missing start (an {{epoch_seconds|epoch_millis|iso}} object)"))?;
+    let end_opts = opts
+        .get("end")
+        .ok_or_else(|| anyhow!("missing end (an {{epoch_seconds|epoch_millis|iso}} object)"))?;
+    let start = resolve_epoch_seconds(start_opts)?;
+    let end = resolve_epoch_seconds(end_opts)?;
+    if end < start {
+        return Err(anyhow!("end ({end}) is before start ({start})"));
+    }
+    let min = boundary_oid(start, 0x00)?;
+    let max = boundary_oid(end, 0xFF)?;
+    Ok(json!({
+        "start_epoch_seconds": start,
+        "end_epoch_seconds": end,
+        "min": min.to_hex(),
+        "max": max.to_hex(),
+    }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1518,6 +1548,11 @@ pub extern "C" fn mongo__objectid_from_time(args: *const c_char) -> *const c_cha
 #[no_mangle]
 pub extern "C" fn mongo__objectid_max_from_time(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_objectid_max_from_time(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__objectid_range(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_objectid_range(opts) })
 }
 
 #[cfg(test)]
@@ -2663,5 +2698,37 @@ mod tests {
         // Out-of-range and missing inputs reject like from_time.
         assert!(op_objectid_max_from_time(json!({"epoch_seconds": 5_000_000_000i64})).is_err());
         assert!(op_objectid_max_from_time(json!({})).is_err());
+    }
+
+    #[test]
+    fn objectid_range_builds_the_inclusive_id_window() {
+        let v = op_objectid_range(json!({
+            "start": {"epoch_seconds": 1_300_816_219i64},
+            "end": {"epoch_seconds": 1_300_902_619i64},
+        }))
+        .unwrap();
+        // min = from_time(start) (all-zero tail); max = max_from_time(end) (all-FF tail).
+        assert_eq!(v["min"], json!("4d88e15b0000000000000000"));
+        assert_eq!(
+            v["max"],
+            op_objectid_max_from_time(json!({"epoch_seconds": 1_300_902_619i64})).unwrap()["oid"]
+        );
+        assert_eq!(v["start_epoch_seconds"], json!(1_300_816_219i64));
+        assert_eq!(v["end_epoch_seconds"], json!(1_300_902_619i64));
+        assert!(v["max"].as_str().unwrap() > v["min"].as_str().unwrap());
+        // iso forms; a single-second window (start == end) is valid (min<max via fill bytes).
+        let same = op_objectid_range(json!({
+            "start": {"iso": "2011-03-22T17:50:19Z"},
+            "end": {"iso": "2011-03-22T17:50:19Z"},
+        }))
+        .unwrap();
+        assert!(same["max"].as_str().unwrap() > same["min"].as_str().unwrap());
+        // end before start, and a missing endpoint, error.
+        assert!(op_objectid_range(
+            json!({"start": {"epoch_seconds": 100}, "end": {"epoch_seconds": 50}})
+        )
+        .is_err());
+        assert!(op_objectid_range(json!({"start": {"epoch_seconds": 100}})).is_err());
+        assert!(op_objectid_range(json!({})).is_err());
     }
 }

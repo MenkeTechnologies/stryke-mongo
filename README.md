@@ -261,6 +261,7 @@ Mongo::parse_objectid($id)           → { hex, epoch_seconds, iso, random, coun
 Mongo::build_objectid($epoch_seconds, $random, $counter) → { oid, epoch_seconds, random, counter }   # inverse: reassemble an ObjectId from its parts (random = 10 hex chars, counter = 24-bit)
 Mongo::objectid_from_time(%opts)     → $oid   # {epoch_seconds|epoch_millis|iso} → boundary ObjectId (createFromTime); inverse of objectid_timestamp
 Mongo::objectid_max_from_time(%opts) → $oid   # same input → LARGEST ObjectId for that second (trailing 0xFF); $lte bound for _id time ranges
+Mongo::objectid_range(\%start, \%end) → { start_epoch_seconds, end_epoch_seconds, min, max }   # inclusive _id window: {_id:{$gte:min,$lte:max}} selects docs created in [start,end] (min=from_time, max=max_from_time)
 ```
 
 Unlike a SQL DSN, `parse_connection_string` returns a host **list** (replica
