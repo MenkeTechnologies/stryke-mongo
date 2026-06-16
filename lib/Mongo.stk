@@ -420,3 +420,12 @@ fn Mongo::parse_objectid ($id) {
 fn Mongo::objectid_from_time (%opts) {
     Mongo::_decode("objectid_from_time", mongo__objectid_from_time(to_json(\%opts)))->{oid}
 }
+
+## Build the LARGEST ObjectId for a timestamp — max-boundary companion to
+## objectid_from_time. Timestamp in the first 4 bytes, rest 0xFF, so it sorts
+## after every real id from that second. Pair with objectid_from_time for an
+## inclusive _id range: { _id => { $gte => from_time(t1), $lte => max_from_time(t2) } }.
+## %opts: one of epoch_seconds, epoch_millis, or iso (RFC 3339). Returns the 24-hex id.
+fn Mongo::objectid_max_from_time (%opts) {
+    Mongo::_decode("objectid_max_from_time", mongo__objectid_max_from_time(to_json(\%opts)))->{oid}
+}

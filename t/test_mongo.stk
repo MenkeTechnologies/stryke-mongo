@@ -164,6 +164,13 @@ assert_eq Mongo::objectid_from_time(iso => "2011-03-22T17:50:19Z"), "4d88e15b000
 assert_eq Mongo::objectid_timestamp(Mongo::objectid_from_time(epoch_seconds => 1300816219))->{epoch_seconds}, 1300816219, "objectid_from_time: round-trips objectid_timestamp"
 assert_dies fn { Mongo::objectid_from_time(epoch_seconds => 5000000000) }, "objectid_from_time: rejects out-of-range timestamp"
 
+# objectid_max_from_time: upper-boundary companion (trailing 0xFF).
+assert_eq Mongo::objectid_max_from_time(epoch_seconds => 1300816219), "4d88e15bffffffffffffffff", "objectid_max_from_time: timestamp prefix, rest 0xFF"
+assert_ok Mongo::objectid_max_from_time(epoch_seconds => 1300816219) gt Mongo::objectid_from_time(epoch_seconds => 1300816219), "objectid_max_from_time: sorts after the min boundary"
+assert_eq Mongo::objectid_timestamp(Mongo::objectid_max_from_time(epoch_seconds => 1300816219))->{epoch_seconds}, 1300816219, "objectid_max_from_time: still decodes to the same second"
+assert_eq Mongo::objectid_max_from_time(iso => "2011-03-22T17:50:19Z"), "4d88e15bffffffffffffffff", "objectid_max_from_time: iso agrees with epoch"
+assert_dies fn { Mongo::objectid_max_from_time(epoch_seconds => 5000000000) }, "objectid_max_from_time: rejects out-of-range timestamp"
+
 assert_dies fn { Mongo::parse_connection_string("postgres://localhost/x") }, "parse_connection_string rejects non-mongo scheme"
 
 test_run

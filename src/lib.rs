@@ -1011,6 +1011,36 @@ fn op_parse_objectid(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Resolve a timestamp from `epoch_seconds`, `epoch_millis`, or an RFC-3339
+/// `iso` string (in that precedence) down to whole epoch seconds. Shared by the
+/// boundary-ObjectId builders.
+fn resolve_epoch_seconds(opts: &Value) -> Result<i64> {
+    if let Some(s) = opts.get("epoch_seconds").and_then(Value::as_i64) {
+        Ok(s)
+    } else if let Some(ms) = opts.get("epoch_millis").and_then(Value::as_i64) {
+        Ok(ms.div_euclid(1000))
+    } else if let Some(iso) = opts.get("iso").and_then(Value::as_str) {
+        Ok(bson::DateTime::parse_rfc3339_str(iso)
+            .map_err(|e| anyhow!("invalid iso timestamp `{iso}`: {e}"))?
+            .timestamp_millis()
+            .div_euclid(1000))
+    } else {
+        Err(anyhow!("missing epoch_seconds, epoch_millis, or iso"))
+    }
+}
+
+/// Build a boundary ObjectId: the first 4 bytes carry the second-precision
+/// timestamp (big-endian) and the trailing 8 bytes are all `fill`. `0x00` gives
+/// the smallest ObjectId for that second, `0xFF` the largest. Shared by
+/// `objectid_from_time` and `objectid_max_from_time`.
+fn boundary_oid(seconds: i64, fill: u8) -> Result<bson::oid::ObjectId> {
+    let secs = u32::try_from(seconds)
+        .map_err(|_| anyhow!("timestamp out of ObjectId range (0..=4294967295s): {seconds}"))?;
+    let mut bytes = [fill; 12];
+    bytes[..4].copy_from_slice(&secs.to_be_bytes());
+    Ok(bson::oid::ObjectId::from_bytes(bytes))
+}
+
 /// Build a boundary ObjectId from a timestamp — the official driver's
 /// `ObjectId.createFromTime`: the first 4 bytes carry the second-precision
 /// timestamp (big-endian) and the remaining 8 bytes are zero, giving the
@@ -1019,23 +1049,22 @@ fn op_parse_objectid(opts: Value) -> Result<Value> {
 /// `epoch_millis`, or `iso` (RFC 3339). Returns `{oid, epoch_seconds}`. Inverse
 /// (at second precision) of `objectid_timestamp`. Pure.
 fn op_objectid_from_time(opts: Value) -> Result<Value> {
-    let seconds = if let Some(s) = opts.get("epoch_seconds").and_then(Value::as_i64) {
-        s
-    } else if let Some(ms) = opts.get("epoch_millis").and_then(Value::as_i64) {
-        ms.div_euclid(1000)
-    } else if let Some(iso) = opts.get("iso").and_then(Value::as_str) {
-        bson::DateTime::parse_rfc3339_str(iso)
-            .map_err(|e| anyhow!("invalid iso timestamp `{iso}`: {e}"))?
-            .timestamp_millis()
-            .div_euclid(1000)
-    } else {
-        return Err(anyhow!("missing epoch_seconds, epoch_millis, or iso"));
-    };
-    let secs = u32::try_from(seconds)
-        .map_err(|_| anyhow!("timestamp out of ObjectId range (0..=4294967295s): {seconds}"))?;
-    let mut bytes = [0u8; 12];
-    bytes[..4].copy_from_slice(&secs.to_be_bytes());
-    let oid = bson::oid::ObjectId::from_bytes(bytes);
+    let seconds = resolve_epoch_seconds(&opts)?;
+    let oid = boundary_oid(seconds, 0x00)?;
+    Ok(json!({ "oid": oid.to_hex(), "epoch_seconds": seconds }))
+}
+
+/// Build the LARGEST ObjectId for a timestamp — the max-boundary companion to
+/// `objectid_from_time`'s min boundary. The first 4 bytes carry the
+/// second-precision timestamp; the remaining 8 are `0xFF`, so it sorts after
+/// every real ObjectId generated during that second. Pairs with
+/// `objectid_from_time` for an inclusive `_id` time-range query:
+/// `{_id: {$gte: from_time(t1), $lte: max_from_time(t2)}}`. opts: one of
+/// `epoch_seconds`, `epoch_millis`, or `iso` (RFC 3339). Returns `{oid,
+/// epoch_seconds}`. Pure.
+fn op_objectid_max_from_time(opts: Value) -> Result<Value> {
+    let seconds = resolve_epoch_seconds(&opts)?;
+    let oid = boundary_oid(seconds, 0xFF)?;
     Ok(json!({ "oid": oid.to_hex(), "epoch_seconds": seconds }))
 }
 
@@ -1264,6 +1293,11 @@ pub extern "C" fn mongo__parse_objectid(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__objectid_from_time(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_objectid_from_time(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__objectid_max_from_time(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_objectid_max_from_time(opts) })
 }
 
 #[cfg(test)]
@@ -2193,5 +2227,36 @@ mod tests {
         // Out-of-range and missing inputs reject.
         assert!(op_objectid_from_time(json!({"epoch_seconds": 5_000_000_000i64})).is_err());
         assert!(op_objectid_from_time(json!({})).is_err());
+    }
+
+    #[test]
+    fn objectid_max_from_time_builds_the_upper_boundary() {
+        // Same timestamp prefix as from_time, but the trailing 8 bytes are 0xFF.
+        let v = op_objectid_max_from_time(json!({"epoch_seconds": 1_300_816_219i64})).unwrap();
+        assert_eq!(v["oid"], json!("4d88e15bffffffffffffffff"));
+        // It shares the timestamp with the min boundary and sorts strictly after it.
+        let min = op_objectid_from_time(json!({"epoch_seconds": 1_300_816_219i64})).unwrap()["oid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let max = v["oid"].as_str().unwrap().to_string();
+        assert!(max > min, "max boundary {max} must sort after min {min}");
+        // The max boundary still decodes back to the same second.
+        assert_eq!(
+            op_objectid_timestamp(json!({ "id": max })).unwrap()["epoch_seconds"],
+            json!(1_300_816_219i64)
+        );
+        // Same time-input forms as from_time, and epoch zero → ts-zero + all-FF tail.
+        assert_eq!(
+            op_objectid_max_from_time(json!({"iso": "2011-03-22T17:50:19Z"})).unwrap()["oid"],
+            json!("4d88e15bffffffffffffffff")
+        );
+        assert_eq!(
+            op_objectid_max_from_time(json!({"epoch_seconds": 0})).unwrap()["oid"],
+            json!("00000000ffffffffffffffff")
+        );
+        // Out-of-range and missing inputs reject like from_time.
+        assert!(op_objectid_max_from_time(json!({"epoch_seconds": 5_000_000_000i64})).is_err());
+        assert!(op_objectid_max_from_time(json!({})).is_err());
     }
 }
