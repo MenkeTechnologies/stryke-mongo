@@ -415,6 +415,16 @@ fn Mongo::escape_regex ($value) {
     Mongo::_decode("escape_regex", mongo__escape_regex(to_json({ value => $value })))
 }
 
+## Recover the literal from an escape_regex output — the inverse of escape_regex.
+## Each \<metacharacter> collapses back to the bare character; an unescaped
+## metacharacter or a backslash before a non-metacharacter (or a dangling
+## backslash) means the input is a real regex, not an escape_regex output, and is
+## rejected — so unescape_regex(escape_regex($s)) == $s. Returns a hashref
+## { escaped, value }.
+fn Mongo::unescape_regex ($escaped) {
+    Mongo::_decode("unescape_regex", mongo__unescape_regex(to_json({ escaped => $escaped })))
+}
+
 ## True if $id is a valid 24-hex-char ObjectId (validated via bson).
 fn Mongo::is_valid_objectid ($id) {
     Mongo::_decode("is_valid_objectid", mongo__is_valid_objectid(to_json({ id => $id })))->{valid}

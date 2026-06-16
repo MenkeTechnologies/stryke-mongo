@@ -168,6 +168,14 @@ assert_eq Mongo::escape_regex("a\\b")->{escaped},    "a\\\\b",       "escape_reg
 assert_eq Mongo::escape_regex("\$9.99")->{escaped},  "\\\$9\\.99",   "escape_regex: dollar and dot escaped"
 assert_dies fn { Mongo::escape_regex() }, "escape_regex: dies without a value"
 
+# unescape_regex: inverse of escape_regex (recovers the literal, rejects real patterns).
+assert_eq Mongo::unescape_regex("a\\.b")->{value},   "a.b",  "unescape_regex: escaped dot collapses"
+assert_eq Mongo::unescape_regex("a\\\\b")->{value},  "a\\b", "unescape_regex: doubled backslash → one"
+# Round-trips escape_regex through the FFI boundary.
+assert_eq Mongo::unescape_regex(Mongo::escape_regex("\$9.99 (USD)")->{escaped})->{value}, "\$9.99 (USD)", "unescape_regex: round-trips escape_regex"
+assert_dies fn { Mongo::unescape_regex("a.b") },  "unescape_regex: rejects an unescaped metacharacter (real regex)"
+assert_dies fn { Mongo::unescape_regex("abc\\") }, "unescape_regex: rejects a dangling backslash"
+
 val $oid = Mongo::new_objectid()
 assert_eq length($oid), 24, "new_objectid: 24 hex chars"
 assert_eq Mongo::is_valid_objectid($oid), 1, "is_valid_objectid: accepts a fresh oid"

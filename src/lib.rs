@@ -1047,6 +1047,46 @@ fn op_escape_regex(opts: Value) -> Result<Value> {
     Ok(json!({ "value": value, "escaped": out }))
 }
 
+/// Recover the literal from an `escape_regex` output — the inverse of
+/// `escape_regex`. Each `\<metacharacter>` (one of `. ^ $ * + ? ( ) [ ] { } | \`)
+/// collapses back to the bare metacharacter. An unescaped metacharacter or a
+/// backslash before a non-metacharacter (or a dangling trailing backslash) means
+/// the input is a real regex pattern, not an `escape_regex` output, so both are
+/// rejected — making `unescape_regex(escape_regex(s)) == s` for every `s`. opts:
+/// `escaped` (or `value`). Returns `{escaped, value}`. Pure.
+fn op_unescape_regex(opts: Value) -> Result<Value> {
+    let escaped = opts
+        .get("escaped")
+        .or_else(|| opts.get("value"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing escaped"))?;
+    const META: &[char] = &[
+        '.', '^', '$', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '\\',
+    ];
+    let mut out = String::with_capacity(escaped.len());
+    let mut chars = escaped.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(m) if META.contains(&m) => out.push(m),
+                Some(other) => {
+                    return Err(anyhow!(
+                        "invalid escape `\\{other}` (not an escape_regex output)"
+                    ))
+                }
+                None => return Err(anyhow!("dangling backslash (not an escape_regex output)")),
+            }
+        } else if META.contains(&c) {
+            return Err(anyhow!(
+                "unescaped metacharacter `{c}` (a real regex, not an escape_regex output)"
+            ));
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(json!({ "escaped": escaped, "value": out }))
+}
+
 /// Whether a string is a valid 24-hex-char MongoDB ObjectId. Validation is
 /// delegated to `bson::oid::ObjectId`, so it tracks the library exactly.
 fn op_is_valid_objectid(opts: Value) -> Result<Value> {
@@ -1438,6 +1478,11 @@ pub extern "C" fn mongo__valid_namespace(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__escape_regex(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_escape_regex(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__unescape_regex(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_unescape_regex(opts) })
 }
 
 #[no_mangle]
@@ -2395,6 +2440,48 @@ mod tests {
         assert_eq!(e("$9.99 (USD)"), "\\$9\\.99 \\(USD\\)");
         assert_eq!(e(""), "");
         assert!(op_escape_regex(json!({})).is_err());
+    }
+
+    #[test]
+    fn unescape_regex_inverts_escape_regex() {
+        let u = |s: &str| {
+            op_unescape_regex(json!({ "escaped": s })).unwrap()["value"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // Each escaped metacharacter collapses back.
+        assert_eq!(u("hello"), "hello");
+        assert_eq!(u("a\\.b"), "a.b");
+        assert_eq!(u("\\(x\\)\\[y\\]\\{z\\}"), "(x)[y]{z}");
+        assert_eq!(
+            u("a\\\\b"),
+            "a\\b",
+            "a doubled backslash is one literal backslash"
+        );
+        // Round-trips escape_regex for every metacharacter and a realistic string.
+        for s in [
+            "hello",
+            "a.b",
+            "1+1=2",
+            "(x)[y]{z}",
+            "^start$",
+            "a|b*c?",
+            "a\\b",
+            "$9.99 (USD)",
+        ] {
+            let esc = op_escape_regex(json!({ "value": s })).unwrap()["escaped"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(u(&esc), s, "round-trips `{s}`");
+        }
+        // A real regex (unescaped metacharacter), an invalid escape, and a
+        // dangling backslash are all rejected.
+        assert!(op_unescape_regex(json!({"escaped": "a.b"})).is_err());
+        assert!(op_unescape_regex(json!({"escaped": "\\d+"})).is_err());
+        assert!(op_unescape_regex(json!({"escaped": "abc\\"})).is_err());
+        assert!(op_unescape_regex(json!({})).is_err());
     }
 
     #[test]
