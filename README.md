@@ -258,6 +258,7 @@ Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validate
 Mongo::new_objectid()                → $hex                 # fresh 24-hex ObjectId
 Mongo::objectid_timestamp($id)       → { epoch_seconds, epoch_millis, iso }   # creation time from leading 4 bytes
 Mongo::parse_objectid($id)           → { hex, epoch_seconds, iso, random, counter }   # full decomposition: timestamp + 5-byte random + 3-byte counter
+Mongo::objectid_compare($a, $b)      → { a, b, cmp, equal, older }   # natural _id sort order (12 bytes lexicographic); finer than timestamp — counter breaks same-second ties; older = earlier-sorting id
 Mongo::build_objectid($epoch_seconds, $random, $counter) → { oid, epoch_seconds, random, counter }   # inverse: reassemble an ObjectId from its parts (random = 10 hex chars, counter = 24-bit)
 Mongo::objectid_from_time(%opts)     → $oid   # {epoch_seconds|epoch_millis|iso} → boundary ObjectId (createFromTime); inverse of objectid_timestamp
 Mongo::objectid_max_from_time(%opts) → $oid   # same input → LARGEST ObjectId for that second (trailing 0xFF); $lte bound for _id time ranges
@@ -312,7 +313,7 @@ and connection-free helpers (`mongo__parse_connection_string`,
 `mongo__redact_connection_string`,
 `mongo__parse_namespace`, `mongo__build_namespace`, `mongo__escape_regex`, `mongo__unescape_regex`,
 `mongo__is_valid_objectid`,
-`mongo__new_objectid`, `mongo__objectid_timestamp`, `mongo__parse_objectid`). The authoritative
+`mongo__new_objectid`, `mongo__objectid_timestamp`, `mongo__parse_objectid`, `mongo__objectid_compare`). The authoritative
 list is `[ffi].exports` in
 `stryke.toml`.
 

@@ -450,6 +450,15 @@ fn Mongo::parse_objectid ($id) {
     Mongo::_decode("parse_objectid", mongo__parse_objectid(to_json({ id => $id })))
 }
 
+## Compare two ObjectIds $a and $b in their natural _id sort order — the 12 bytes
+## compared lexicographically (timestamp, then random, then counter). Finer than
+## comparing objectid_timestamp: two ids from the same second still have a defined
+## order via the counter. Returns a hashref { a, b, cmp => -1|0|1, equal, older }
+## where older is the earlier-sorting id (undef when equal).
+fn Mongo::objectid_compare ($a, $b) {
+    Mongo::_decode("objectid_compare", mongo__objectid_compare(to_json({ a => $a, b => $b })))
+}
+
 ## Reconstruct an ObjectId from its parts — inverse of parse_objectid. $random is
 ## a 10-hex-char (5-byte) string, $counter a 0..16777215 (24-bit) integer; both
 ## the timestamp and counter are big-endian. Returns a hashref

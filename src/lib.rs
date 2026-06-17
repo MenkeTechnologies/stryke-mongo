@@ -1158,6 +1158,46 @@ fn op_parse_objectid(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Compare two ObjectIds in their natural (`_id` sort) order — the 12 bytes
+/// compared lexicographically, which is timestamp-then-random-then-counter. This
+/// is finer than comparing `objectid_timestamp`: two ObjectIds created in the same
+/// second still have a defined order (via the counter), so this resolves ties a
+/// second-resolution time comparison cannot. opts: `a`, `b` (required ObjectId hex
+/// strings). Returns `{a, b, cmp: -1|0|1, equal, older}` where `older` is the
+/// earlier-sorting id (`null` when equal). Pure.
+fn op_objectid_compare(opts: Value) -> Result<Value> {
+    let a = opts
+        .get("a")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing a"))?;
+    let b = opts
+        .get("b")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing b"))?;
+    let oa =
+        bson::oid::ObjectId::parse_str(a).map_err(|e| anyhow!("invalid ObjectId `{a}`: {e}"))?;
+    let ob =
+        bson::oid::ObjectId::parse_str(b).map_err(|e| anyhow!("invalid ObjectId `{b}`: {e}"))?;
+    let cmp = oa.bytes().cmp(&ob.bytes());
+    let ord = match cmp {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Equal => 0,
+        std::cmp::Ordering::Greater => 1,
+    };
+    let older = match ord {
+        x if x < 0 => json!(a),
+        x if x > 0 => json!(b),
+        _ => Value::Null,
+    };
+    Ok(json!({
+        "a": a,
+        "b": b,
+        "cmp": ord,
+        "equal": ord == 0,
+        "older": older,
+    }))
+}
+
 /// Reconstruct an ObjectId from its three components — the inverse of
 /// `parse_objectid`. The 12 bytes are `epoch_seconds` (4, big-endian) + `random`
 /// (5 bytes, given as a 10-character hex string) + `counter` (3 bytes,
@@ -1533,6 +1573,11 @@ pub extern "C" fn mongo__objectid_timestamp(args: *const c_char) -> *const c_cha
 #[no_mangle]
 pub extern "C" fn mongo__parse_objectid(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_parse_objectid(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__objectid_compare(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_objectid_compare(opts) })
 }
 
 #[no_mangle]
@@ -2595,6 +2640,48 @@ mod tests {
         assert_eq!(zero["random"], json!("0000000000"));
         assert!(op_parse_objectid(json!({"id": "nothex"})).is_err());
         assert!(op_parse_objectid(json!({})).is_err());
+    }
+
+    #[test]
+    fn objectid_compare_orders_by_the_twelve_bytes() {
+        let c = |a: &str, b: &str| {
+            op_objectid_compare(json!({"a": a, "b": b})).unwrap()["cmp"]
+                .as_i64()
+                .unwrap()
+        };
+        // Earlier timestamp sorts first (a's leading bytes are smaller).
+        let early = "4d88e15b000000000000000a";
+        let late = "5d88e15b000000000000000a";
+        assert_eq!(c(early, late), -1);
+        assert_eq!(c(late, early), 1);
+        assert_eq!(c(early, early), 0);
+        // Same timestamp, different counter → the counter breaks the tie (finer
+        // than objectid_timestamp, which is second-resolution).
+        let t = "4d88e15b6000000000000000";
+        let same_sec_a = "4d88e15b0000000000000001";
+        let same_sec_b = "4d88e15b0000000000000002";
+        assert_eq!(
+            op_objectid_timestamp(json!({"id": same_sec_a})).unwrap()["epoch_seconds"],
+            op_objectid_timestamp(json!({"id": same_sec_b})).unwrap()["epoch_seconds"],
+            "same second"
+        );
+        assert_eq!(
+            c(same_sec_a, same_sec_b),
+            -1,
+            "counter breaks the same-second tie"
+        );
+        let _ = t;
+        // `older`/`equal` fields and the input/null cases.
+        let v = op_objectid_compare(json!({"a": late, "b": early})).unwrap();
+        assert_eq!(v["older"], json!(early));
+        assert_eq!(v["equal"], json!(false));
+        let eq = op_objectid_compare(json!({"a": early, "b": early})).unwrap();
+        assert_eq!(eq["older"], Value::Null);
+        assert_eq!(eq["equal"], json!(true));
+        // Invalid ids and missing args error.
+        assert!(op_objectid_compare(json!({"a": "nothex", "b": early})).is_err());
+        assert!(op_objectid_compare(json!({"a": early})).is_err());
+        assert!(op_objectid_compare(json!({})).is_err());
     }
 
     #[test]
