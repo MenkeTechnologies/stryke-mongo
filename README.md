@@ -252,6 +252,7 @@ Mongo::build_namespace($db, $coll)   → $ns                 # join db.collectio
 Mongo::valid_collection_name($name, $db?) → { name, valid, reason }   # MongoDB rules: no $, no null, not empty, no system. prefix; 255-byte ns with $db
 Mongo::valid_database_name($name) → { name, valid, reason }   # MongoDB db rules: not empty, <64 chars, no null/space/ /\."$*<>:|?
 Mongo::valid_namespace($ns) → { namespace, valid, reason, database, collection }   # validate a full db.collection in one call (splits on first dot; checks both parts + 255-byte limit)
+Mongo::valid_field_name($name) → { name, valid, reason }   # BSON key rules: not empty, no $ prefix, no . separator, no null
 Mongo::escape_regex($value) → { value, escaped }   # escape PCRE metacharacters (. ^ $ * + ? ( ) [ ] { } | \) for a literal $regex match
 Mongo::unescape_regex($escaped) → { escaped, value }   # inverse of escape_regex: recover the literal; rejects a real regex (unescaped metachar / dangling backslash)
 Mongo::is_valid_objectid($id)        → 1 | ""               # 24-hex, validated via bson

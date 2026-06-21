@@ -407,6 +407,13 @@ fn Mongo::valid_namespace ($namespace) {
     Mongo::_decode("valid_namespace", mongo__valid_namespace(to_json({ namespace => $namespace })))
 }
 
+## Validate a MongoDB document field name (BSON key): not empty, not starting
+## with "$" (reserved for operators), no "." (the path separator), no null
+## character. Returns a hashref { name, valid, reason }.
+fn Mongo::valid_field_name ($name) {
+    Mongo::_decode("valid_field_name", mongo__valid_field_name(to_json({ name => $name })))
+}
+
 ## Escape the PCRE regex metacharacters in $value (. ^ $ * + ? ( ) [ ] { } | \)
 ## so it matches itself literally inside a MongoDB $regex query — e.g. build a
 ## prefix match with "^" . Mongo::escape_regex($s). Returns a hashref

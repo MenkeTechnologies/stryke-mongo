@@ -973,6 +973,29 @@ fn op_valid_database_name(opts: Value) -> Result<Value> {
     Ok(json!({"name": name, "valid": reason.is_none(), "reason": reason}))
 }
 
+/// Validate a MongoDB document field name (BSON key): must not be empty, must not
+/// start with `$` (reserved for operators), must not contain `.` (the path
+/// separator), and must not contain a null character. opts: `name` (required).
+/// Returns `{name, valid, reason}`. Pure.
+fn op_valid_field_name(opts: Value) -> Result<Value> {
+    let name = opts
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing name"))?;
+    let reason: Option<&str> = if name.is_empty() {
+        Some("must not be empty")
+    } else if name.starts_with('$') {
+        Some("must not start with '$' (reserved for operators)")
+    } else if name.contains('.') {
+        Some("must not contain '.' (the path separator)")
+    } else if name.contains('\0') {
+        Some("must not contain a null character")
+    } else {
+        None
+    };
+    Ok(json!({"name": name, "valid": reason.is_none(), "reason": reason}))
+}
+
 /// Validate a full MongoDB namespace `database.collection` in one call — splits on
 /// the first `.` (a database name can't contain `.`, a collection name can), then
 /// validates the database part with `valid_database_name` and the collection part
@@ -1543,6 +1566,11 @@ pub extern "C" fn mongo__valid_database_name(args: *const c_char) -> *const c_ch
 #[no_mangle]
 pub extern "C" fn mongo__valid_namespace(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_valid_namespace(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__valid_field_name(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_valid_field_name(opts) })
 }
 
 #[no_mangle]
@@ -2457,6 +2485,28 @@ mod tests {
         assert_eq!(long["valid"], json!(false));
         assert!(long["reason"].as_str().unwrap().contains("64"));
         assert!(op_valid_database_name(json!({})).is_err());
+    }
+
+    #[test]
+    fn valid_field_name_enforces_bson_key_rules() {
+        let ok = |name: &str| {
+            op_valid_field_name(json!({ "name": name })).unwrap()["valid"]
+                .as_bool()
+                .unwrap()
+        };
+        assert!(ok("name"));
+        assert!(ok("user_id"));
+        assert!(ok("a-b"));
+        for (name, want) in [("", "empty"), ("$set", "$"), ("a.b", "."), ("a\0b", "null")] {
+            let v = op_valid_field_name(json!({ "name": name })).unwrap();
+            assert_eq!(v["valid"], json!(false), "{name} should be invalid");
+            assert!(
+                v["reason"].as_str().unwrap().contains(want),
+                "{name}: reason `{}` should mention `{want}`",
+                v["reason"]
+            );
+        }
+        assert!(op_valid_field_name(json!({})).is_err());
     }
 
     #[test]
