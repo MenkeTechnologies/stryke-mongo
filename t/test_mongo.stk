@@ -69,6 +69,24 @@ if ($alive) {
     val $idx = Mongo::create_index($tgt, { name => 1 }, unique => 1, %conn)
     assert_eq $idx, "name_1", "create_index: returns index name name_1"
 
+    # 8a1. collection_specs — full specs (not just names); our scratch coll is
+    # present with type "collection". A filter narrows the listing.
+    val @specs = Mongo::collection_specs("stryke_test", %conn)
+    assert_ge scalar(@specs), 1, "collection_specs: ≥1 spec for the scratch db"
+    var $found_spec = 0
+    for val $s (@specs) {
+        $found_spec = 1 if $s->{name} eq $coll
+    }
+    assert_eq $found_spec, 1, "collection_specs: scratch collection appears with its spec"
+    val @filtered = Mongo::collection_specs("stryke_test", filter => { name => $coll }, %conn)
+    assert_eq scalar(@filtered), 1, "collection_specs: filter narrows to one collection"
+    assert_eq $filtered[0]{type}, "collection", "collection_specs: reports type collection"
+
+    # 8a2. validate — server-side integrity check of the collection + indexes.
+    val $val = Mongo::validate($tgt, %conn)
+    assert_ok $val->{valid}, "validate: scratch collection is valid"
+    assert_ge $val->{nIndexes}, 1, "validate: reports at least the _id index"
+
     # 8b. aggregate_db — database-level pipeline ($listLocalSessions runs against
     # the db, not a collection). Just assert it returns (≥0 docs) without dying.
     val @sess = eval { Mongo::aggregate_db("stryke_test",
@@ -303,5 +321,38 @@ val $brp = Mongo::build_regex_filter("name", "foo", anchor => "prefix", ignore_c
 assert_eq $brp->{name}{'$regex'},   "^foo", "build_regex_filter: prefix anchor"
 assert_eq $brp->{name}{'$options'}, "i",    "build_regex_filter: ignore_case adds i option"
 assert_dies fn { Mongo::build_regex_filter("f", "x", anchor => "bad") }, "build_regex_filter: bad anchor dies"
+
+# or_filter: disjunctive companion to merge_filters. 0 → {}, 1 → pass-through, 2+ → $or.
+val $orf = Mongo::or_filter([{ a => 1 }, { b => 2 }])
+assert_eq scalar(@{ $orf->{'$or'} }), 2, "or_filter: two clauses → \$or array"
+assert_eq $orf->{'$or'}[1]{b}, 2, "or_filter: second clause preserved"
+assert_eq Mongo::or_filter([{ a => 1 }])->{a}, 1, "or_filter: single filter returned unchanged"
+assert_eq scalar(keys %{ Mongo::or_filter([]) }), 0, "or_filter: empty → match-all {}"
+assert_dies fn { Mongo::or_filter({ x => 1 }) }, "or_filter: requires an arrayref"
+
+# exists_filter: defaults to true; honors explicit false. (the cdylib emits a
+# JSON bool; stryke decodes JSON true→1 / false→0.)
+assert_eq Mongo::exists_filter("email")->{email}{'$exists'}, 1, "exists_filter: defaults to \$exists true"
+assert_eq Mongo::exists_filter("email", exists => 0)->{email}{'$exists'}, 0, "exists_filter: explicit false"
+
+# elem_match_filter: whole query binds to one array element.
+val $em = Mongo::elem_match_filter("scores", { '$gte' => 80, '$lt' => 90 })
+assert_eq $em->{scores}{'$elemMatch'}{'$gte'}, 80, "elem_match_filter: lower bound under \$elemMatch"
+assert_eq $em->{scores}{'$elemMatch'}{'$lt'},  90, "elem_match_filter: upper bound under \$elemMatch"
+assert_dies fn { Mongo::elem_match_filter("f", "notahash") }, "elem_match_filter: query must be a hashref"
+
+# text_filter: $text/$search with optional knobs; minimal call carries no extras.
+val $tf = Mongo::text_filter("coffee shop")
+assert_eq $tf->{'$text'}{'$search'}, "coffee shop", "text_filter: \$search carried"
+assert_ok !exists $tf->{'$text'}{'$language'}, "text_filter: no phantom \$language when unset"
+val $tff = Mongo::text_filter("cafe", language => "fr", case_sensitive => 1)
+assert_eq $tff->{'$text'}{'$language'},      "fr", "text_filter: language carried"
+assert_eq $tff->{'$text'}{'$caseSensitive'}, 1, "text_filter: case_sensitive carried"
+
+# not_filter: wraps an operator expression; rejects bare value / logical ops.
+assert_eq Mongo::not_filter("age", { '$gt' => 5 })->{age}{'$not'}{'$gt'}, 5, "not_filter: wraps operator under \$not"
+assert_dies fn { Mongo::not_filter("f", { a => 1 }) }, "not_filter: rejects a non-operator field key"
+assert_dies fn { Mongo::not_filter("f", { '$or' => [{ a => 1 }] }) }, "not_filter: rejects a logical operator"
+assert_dies fn { Mongo::not_filter("f", "notahash") }, "not_filter: expr must be a hashref"
 
 test_run

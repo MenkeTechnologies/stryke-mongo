@@ -30,6 +30,8 @@ exports = [
     "mongo__create_indexes",
     "mongo__drop_index",
     "mongo__indexes",
+    "mongo__collection_specs",
+    "mongo__validate",
     "mongo__find_one_and_update",
     "mongo__find_one_and_replace",
     "mongo__find_one_and_delete",
@@ -75,6 +77,11 @@ exports = [
     "mongo__in_filter",
     "mongo__between_filter",
     "mongo__build_regex_filter",
+    "mongo__or_filter",
+    "mongo__exists_filter",
+    "mongo__elem_match_filter",
+    "mongo__text_filter",
+    "mongo__not_filter",
 ]
 
 [scripts]

@@ -224,6 +224,28 @@ fn Mongo::indexes ($target, %opts) {
     @{ $o->{indexes} }
 }
 
+## Full collection specifications for $db — the richer companion to
+## list_collections (names only). Each spec carries name, type
+## ("collection"|"view"|"timeseries"), options (capped/size/validator/viewOn/
+## pipeline), and info (readOnly, uuid). opt `filter` is a listCollections filter
+## doc, e.g. { type => "view" }. Returns an array of spec hashrefs.
+fn Mongo::collection_specs ($db, %opts) {
+    val $r = Mongo::_req({ db => $db, filter => $opts{filter} }, \%opts)
+    val $o = Mongo::_decode("collection_specs", mongo__collection_specs(to_json($r)))
+    @{ $o->{collections} }
+}
+
+## Run the server-side `validate` command on $target ("db.coll") — integrity
+## check of the collection and its indexes. opts: full (bool → deep per-document
+## scan; slower, locks), repair (bool → attempt to fix; standalone only). Returns
+## the raw validate result hashref ({ valid, nrecords, nIndexes, errors, ... }).
+fn Mongo::validate ($target, %opts) {
+    val $r = Mongo::_req(
+        { target => $target, full => ($opts{full} ? 1 : 0),
+          repair => ($opts{repair} ? 1 : 0) }, \%opts)
+    Mongo::_decode("validate", mongo__validate(to_json($r)))->{result}
+}
+
 # ── distinct / counts / collection admin / run_command ──────────────
 
 ## Distinct values of $field across docs matching $filter. Returns a list.
@@ -604,4 +626,54 @@ fn Mongo::between_filter ($field, %opts) {
 fn Mongo::build_regex_filter ($field, $value, %opts) {
     Mongo::_decode("build_regex_filter",
         mongo__build_regex_filter(to_json({ field => $field, value => $value, anchor => $opts{anchor}, ignore_case => ($opts{ignore_case} ? 1 : 0) })))->{filter}
+}
+
+## Combine $filters (an arrayref of filter hashrefs) into one '$or' filter —
+## matches when ANY clause matches. The disjunctive companion to merge_filters
+## ('$and'/shallow merge). An empty array yields {} (match all); a single filter
+## is returned unchanged. Returns the filter hashref { '$or' => [ … ] }.
+fn Mongo::or_filter ($filters) {
+    die "Mongo::or_filter: filters must be an arrayref" unless ref($filters) eq "ARRAY"
+    Mongo::_decode("or_filter", mongo__or_filter(to_json({ filters => $filters })))->{filter}
+}
+
+## Build an '$exists' filter for $field. %opts: exists (bool, default true) —
+## true selects docs that have the field (even when null), false selects docs
+## missing it. Returns { $field => { '$exists' => true|false } }.
+fn Mongo::exists_filter ($field, %opts) {
+    val $exists = exists $opts{exists} ? ($opts{exists} ? 1 : 0) : 1
+    Mongo::_decode("exists_filter",
+        mongo__exists_filter(to_json({ field => $field, exists => $exists })))->{filter}
+}
+
+## Build an '$elemMatch' filter — matches docs where one element of the array
+## $field satisfies the WHOLE $query hashref (so several conditions hold on the
+## same element). Returns { $field => { '$elemMatch' => { … } } }.
+fn Mongo::elem_match_filter ($field, $query) {
+    die "Mongo::elem_match_filter: query must be a hashref" unless ref($query) eq "HASH"
+    Mongo::_decode("elem_match_filter",
+        mongo__elem_match_filter(to_json({ field => $field, query => $query })))->{filter}
+}
+
+## Build a '$text' full-text search filter (requires a text index on the
+## collection). %opts: language (override the index's stemming language),
+## case_sensitive (bool), diacritic_sensitive (bool). Returns
+## { '$text' => { '$search' => $search, … } }.
+fn Mongo::text_filter ($search, %opts) {
+    var %r = (search => $search)
+    $r{language} = $opts{language} if defined $opts{language}
+    $r{case_sensitive} = ($opts{case_sensitive} ? 1 : 0) if exists $opts{case_sensitive} && defined $opts{case_sensitive}
+    $r{diacritic_sensitive} = ($opts{diacritic_sensitive} ? 1 : 0) if exists $opts{diacritic_sensitive} && defined $opts{diacritic_sensitive}
+    Mongo::_decode("text_filter", mongo__text_filter(to_json(\%r)))->{filter}
+}
+
+## Negate a single-field operator expression with '$not'. $expr is an operator
+## hashref like { '$gt' => 5 } or { '$regex' => "^a" }; '$not' wraps it so $field
+## matches docs where the inner expression does NOT hold (including docs missing
+## the field). A bare value or a logical operator ('$or'/'$and'/'$nor') is
+## rejected. Returns { $field => { '$not' => { … } } }.
+fn Mongo::not_filter ($field, $expr) {
+    die "Mongo::not_filter: expr must be a hashref" unless ref($expr) eq "HASH"
+    Mongo::_decode("not_filter",
+        mongo__not_filter(to_json({ field => $field, expr => $expr })))->{filter}
 }

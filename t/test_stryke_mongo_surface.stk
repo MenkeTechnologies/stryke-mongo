@@ -60,6 +60,8 @@ assert_ok exists &Mongo::explain, "Mongo::explain exists"
 assert_ok exists &Mongo::server_status, "Mongo::server_status exists"
 
 assert_ok exists &Mongo::create_indexes, "Mongo::create_indexes exists"
+assert_ok exists &Mongo::collection_specs, "Mongo::collection_specs exists"
+assert_ok exists &Mongo::validate, "Mongo::validate exists"
 
 # ── pure ObjectId / namespace helpers ──
 assert_ok exists &Mongo::parse_connection_string, "Mongo::parse_connection_string exists"
@@ -93,4 +95,9 @@ assert_ok exists &Mongo::normalize_index_keys, "Mongo::normalize_index_keys exis
 assert_ok exists &Mongo::in_filter, "Mongo::in_filter exists"
 assert_ok exists &Mongo::between_filter, "Mongo::between_filter exists"
 assert_ok exists &Mongo::build_regex_filter, "Mongo::build_regex_filter exists"
+assert_ok exists &Mongo::or_filter, "Mongo::or_filter exists"
+assert_ok exists &Mongo::exists_filter, "Mongo::exists_filter exists"
+assert_ok exists &Mongo::elem_match_filter, "Mongo::elem_match_filter exists"
+assert_ok exists &Mongo::text_filter, "Mongo::text_filter exists"
+assert_ok exists &Mongo::not_filter, "Mongo::not_filter exists"
 test_run

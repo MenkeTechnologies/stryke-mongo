@@ -634,6 +634,48 @@ async fn op_indexes(opts: Value) -> Result<Value> {
     Ok(json!({"indexes": out}))
 }
 
+/// Full collection specifications for $db — the richer companion to
+/// `list_collections`, which returns only the names. Each spec carries the
+/// collection `name`, `type` ("collection"|"view"|"timeseries"), `options`
+/// (capped/size/validator/viewOn/pipeline), and `info` (readOnly, uuid). opts:
+/// `db` (required), optional `filter` (a `listCollections` filter document, e.g.
+/// `{ "type": "view" }`). Returns `{collections: [ {…}, … ]}`.
+async fn op_collection_specs(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let db = opts["db"].as_str().ok_or_else(|| anyhow!("missing db"))?;
+    let database = c.database(db);
+    let action = database.list_collections();
+    let action = match opt_doc(&opts, "filter") {
+        Some(f) => action.filter(f),
+        None => action,
+    };
+    let mut cursor = action.await?;
+    let mut out: Vec<Value> = Vec::new();
+    while let Some(spec) = cursor.try_next().await? {
+        out.push(serde_json::to_value(spec)?);
+    }
+    Ok(json!({"collections": out}))
+}
+
+/// Run the `validate` command on $target ("db.coll") — server-side integrity
+/// check of a collection and its indexes. opts: `full` (bool → deep scan of
+/// every document; slower, holds a lock) and `repair` (bool → attempt to fix
+/// inconsistencies; standalone only). Returns `{result}` with the raw validate
+/// document (`valid`, `nrecords`, `nIndexes`, `errors`, `warnings`, …).
+async fn op_validate(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    let mut cmd = json!({ "validate": coll });
+    if let Some(full) = opt_truthy(&opts, "full") {
+        cmd["full"] = json!(full);
+    }
+    if let Some(repair) = opt_truthy(&opts, "repair") {
+        cmd["repair"] = json!(repair);
+    }
+    let r = c.database(&db).run_command(json_to_doc(&cmd)?).await?;
+    Ok(json!({ "result": doc_to_json(&r)? }))
+}
+
 // ── FFI plumbing ────────────────────────────────────────────────────────────
 
 fn ffi_call_async<F, Fut>(args: *const c_char, handler: F) -> *const c_char
@@ -1751,6 +1793,121 @@ fn op_build_regex_filter(opts: Value) -> Result<Value> {
     Ok(json!({ "filter": { field: Value::Object(regex) } }))
 }
 
+/// Combine `filters` (an array of filter objects) into a single `$or` filter —
+/// matches a document when ANY clause matches. This is the disjunctive
+/// counterpart to `merge_filters` (which produces `$and`/shallow-merge). An empty
+/// array yields `{}` (match all); a single filter is returned unchanged (the
+/// `$or` wrapper would be redundant). opts: `filters` (array). Returns `{filter}`
+/// shaped `{ "$or": [ … ] }`. Pure.
+fn op_or_filter(opts: Value) -> Result<Value> {
+    let filters = opts
+        .get("filters")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing filters (array of objects)"))?;
+    for f in filters {
+        if !f.is_object() {
+            return Err(anyhow!("each filter must be an object"));
+        }
+    }
+    match filters.len() {
+        0 => Ok(json!({ "filter": {} })),
+        1 => Ok(json!({ "filter": filters[0] })),
+        _ => Ok(json!({ "filter": { "$or": filters } })),
+    }
+}
+
+/// Build an `$exists` filter for a field. opts: `field` (required), `exists`
+/// (bool, default `true`). `{ field: { "$exists": true } }` selects documents
+/// that have the field (even when null); `false` selects documents missing it.
+/// Returns `{filter}`. Pure.
+fn op_exists_filter(opts: Value) -> Result<Value> {
+    let field = opts
+        .get("field")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing field"))?;
+    let exists = opt_truthy(&opts, "exists").unwrap_or(true);
+    Ok(json!({ "filter": { field: { "$exists": exists } } }))
+}
+
+/// Build an `$elemMatch` filter — matches documents where at least one element of
+/// the array `field` satisfies the whole `query` object. Use this when several
+/// conditions must hold on the SAME array element (a plain `{ "field.a": …,
+/// "field.b": … }` would let different elements satisfy each condition). opts:
+/// `field` (required), `query` (required object, the per-element predicate).
+/// Returns `{filter}` shaped `{ field: { "$elemMatch": { … } } }`. Pure.
+fn op_elem_match_filter(opts: Value) -> Result<Value> {
+    let field = opts
+        .get("field")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing field"))?;
+    let query = opts
+        .get("query")
+        .filter(|v| v.is_object())
+        .ok_or_else(|| anyhow!("missing query (object)"))?;
+    Ok(json!({ "filter": { field: { "$elemMatch": query } } }))
+}
+
+/// Build a `$text` full-text search filter — requires a text index on the
+/// collection. opts: `search` (required search string), `language` (override the
+/// index's default stemming language), `case_sensitive` (bool), and
+/// `diacritic_sensitive` (bool). Returns `{filter}` shaped `{ "$text": {
+/// "$search": …, … } }`. Pure.
+fn op_text_filter(opts: Value) -> Result<Value> {
+    let search = opts
+        .get("search")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing search (string)"))?;
+    let mut text = serde_json::Map::new();
+    text.insert("$search".into(), json!(search));
+    if let Some(lang) = opts.get("language").and_then(Value::as_str) {
+        text.insert("$language".into(), json!(lang));
+    }
+    if let Some(cs) = opt_truthy(&opts, "case_sensitive") {
+        text.insert("$caseSensitive".into(), json!(cs));
+    }
+    if let Some(ds) = opt_truthy(&opts, "diacritic_sensitive") {
+        text.insert("$diacriticSensitive".into(), json!(ds));
+    }
+    Ok(json!({ "filter": { "$text": Value::Object(text) } }))
+}
+
+/// Negate a single-field operator expression with `$not`. `expr` is an operator
+/// object such as `{ "$gt": 5 }` or `{ "$regex": "^a" }` — `$not` wraps it so the
+/// field matches documents where the inner expression does NOT hold (including
+/// documents missing the field). opts: `field` (required), `expr` (required
+/// operator object). A plain value (`5`) or a logical-operator object (`$or`)
+/// cannot be negated this way and is rejected. Returns `{filter}` shaped
+/// `{ field: { "$not": { … } } }`. Pure.
+fn op_not_filter(opts: Value) -> Result<Value> {
+    let field = opts
+        .get("field")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing field"))?;
+    let expr = opts
+        .get("expr")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("missing expr (an operator object like {{\"$gt\": 5}})"))?;
+    if expr.is_empty() {
+        return Err(anyhow!("expr must be a non-empty operator object"));
+    }
+    // $not only wraps operator expressions; every key must be an operator ($…).
+    // A bare value or a logical operator ($or/$and/$nor) is not a valid $not arg.
+    for k in expr.keys() {
+        if !k.starts_with('$') {
+            return Err(anyhow!(
+                "expr key `{k}` is not an operator — $not wraps operator expressions like {{\"$gt\": 5}}"
+            ));
+        }
+        if matches!(k.as_str(), "$or" | "$and" | "$nor") {
+            return Err(anyhow!("$not cannot wrap the logical operator `{k}`"));
+        }
+    }
+    Ok(json!({ "filter": { field: { "$not": expr } } }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1848,6 +2005,16 @@ pub extern "C" fn mongo__drop_index(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__indexes(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_indexes)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__collection_specs(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_collection_specs)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__validate(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_validate)
 }
 
 #[no_mangle]
@@ -2076,6 +2243,31 @@ pub extern "C" fn mongo__between_filter(args: *const c_char) -> *const c_char {
 #[no_mangle]
 pub extern "C" fn mongo__build_regex_filter(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_build_regex_filter(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__or_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_or_filter(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__exists_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_exists_filter(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__elem_match_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_elem_match_filter(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__text_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_text_filter(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__not_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_not_filter(opts) })
 }
 
 #[cfg(test)]
@@ -3551,5 +3743,115 @@ mod tests {
             op_build_regex_filter(json!({"field": "f", "value": "x", "anchor": "bad"})).is_err()
         );
         assert!(op_build_regex_filter(json!({"field": "", "value": "x"})).is_err());
+    }
+
+    /// `or_filter` is the disjunctive counterpart to `merge_filters`: 0 → {},
+    /// 1 → pass-through (the `$or` wrapper would be redundant and changes
+    /// nothing semantically), 2+ → `{ "$or": [...] }`. Pin all three arities
+    /// plus the non-object rejection, since a stray scalar in the array would
+    /// otherwise produce a query mongo silently mishandles.
+    #[test]
+    fn or_filter_arities_and_rejects_non_object() {
+        assert_eq!(
+            op_or_filter(json!({"filters": []})).unwrap()["filter"],
+            json!({})
+        );
+        // Single filter returned unchanged — no redundant $or wrapper.
+        assert_eq!(
+            op_or_filter(json!({"filters": [{"a": 1}]})).unwrap()["filter"],
+            json!({"a": 1})
+        );
+        assert_eq!(
+            op_or_filter(json!({"filters": [{"a": 1}, {"b": 2}]})).unwrap()["filter"],
+            json!({"$or": [{"a": 1}, {"b": 2}]})
+        );
+        assert!(op_or_filter(json!({})).is_err());
+        assert!(op_or_filter(json!({"filters": [42]})).is_err());
+    }
+
+    /// `exists_filter` defaults to `true` (the common "has this field" case) and
+    /// honors an explicit `false`. The default is the load-bearing bit — a caller
+    /// who omits `exists` must get `$exists: true`, not `$exists: false`.
+    #[test]
+    fn exists_filter_default_true_and_explicit_false() {
+        assert_eq!(
+            op_exists_filter(json!({"field": "email"})).unwrap()["filter"],
+            json!({"email": {"$exists": true}})
+        );
+        assert_eq!(
+            op_exists_filter(json!({"field": "email", "exists": false})).unwrap()["filter"],
+            json!({"email": {"$exists": false}})
+        );
+        // exists carried as 0/1 numbers (stryke's to_json shape) is honored too.
+        assert_eq!(
+            op_exists_filter(json!({"field": "x", "exists": 0})).unwrap()["filter"],
+            json!({"x": {"$exists": false}})
+        );
+        assert!(op_exists_filter(json!({"field": ""})).is_err());
+    }
+
+    /// `elem_match_filter` wraps the WHOLE query under `$elemMatch` so multiple
+    /// conditions bind to the same array element — the distinction from a plain
+    /// dotted-key filter. Pin the shape and the non-object query rejection.
+    #[test]
+    fn elem_match_filter_shape_and_rejects_non_object() {
+        assert_eq!(
+            op_elem_match_filter(json!({
+                "field": "scores", "query": {"$gte": 80, "$lt": 90}
+            }))
+            .unwrap()["filter"],
+            json!({"scores": {"$elemMatch": {"$gte": 80, "$lt": 90}}})
+        );
+        assert!(op_elem_match_filter(json!({"field": "f"})).is_err());
+        assert!(op_elem_match_filter(json!({"field": "f", "query": 5})).is_err());
+        assert!(op_elem_match_filter(json!({"field": "", "query": {}})).is_err());
+    }
+
+    /// `text_filter` always emits `$search` and only adds the optional knobs when
+    /// supplied — an unconfigured call must be exactly `{$text: {$search: …}}`,
+    /// not carry phantom `$caseSensitive`/`$language` keys that change behavior.
+    #[test]
+    fn text_filter_minimal_and_full() {
+        assert_eq!(
+            op_text_filter(json!({"search": "coffee shop"})).unwrap()["filter"],
+            json!({"$text": {"$search": "coffee shop"}})
+        );
+        let full = op_text_filter(json!({
+            "search": "café", "language": "fr",
+            "case_sensitive": true, "diacritic_sensitive": false
+        }))
+        .unwrap();
+        assert_eq!(
+            full["filter"],
+            json!({"$text": {
+                "$search": "café",
+                "$language": "fr",
+                "$caseSensitive": true,
+                "$diacriticSensitive": false
+            }})
+        );
+        assert!(op_text_filter(json!({})).is_err());
+    }
+
+    /// `not_filter` wraps an operator expression under `$not`. The guard is the
+    /// load-bearing part: `$not` is only valid around operator expressions, so a
+    /// bare value, an empty object, or a logical operator ($or/$and/$nor) must be
+    /// rejected rather than producing a query the server errors on at runtime.
+    #[test]
+    fn not_filter_wraps_operator_and_rejects_invalid() {
+        assert_eq!(
+            op_not_filter(json!({"field": "age", "expr": {"$gt": 5}})).unwrap()["filter"],
+            json!({"age": {"$not": {"$gt": 5}}})
+        );
+        // Missing/empty expr.
+        assert!(op_not_filter(json!({"field": "f"})).is_err());
+        assert!(op_not_filter(json!({"field": "f", "expr": {}})).is_err());
+        // Bare value is not an operator expression.
+        assert!(op_not_filter(json!({"field": "f", "expr": 5})).is_err());
+        // A field-key (non-$) inside expr is invalid for $not.
+        assert!(op_not_filter(json!({"field": "f", "expr": {"a": 1}})).is_err());
+        // Logical operators cannot be wrapped by $not.
+        assert!(op_not_filter(json!({"field": "f", "expr": {"$or": [{"a": 1}]}})).is_err());
+        assert!(op_not_filter(json!({"field": "", "expr": {"$gt": 1}})).is_err());
     }
 }

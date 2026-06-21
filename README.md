@@ -236,6 +236,8 @@ Mongo::indexes           $target, %opts → @specs
 Mongo::aggregate_db      $db, \@pipeline, %opts → @docs        # database-level aggregation ($currentOp, $listLocalSessions)
 Mongo::run_command       $db, \%command, %opts → \%result     # arbitrary db command
 Mongo::rename_collection $target, $to, %opts → { ok, renamed } # opt: drop_target
+Mongo::collection_specs  $db, %opts → @specs                  # full listCollections specs (name, type, options, info); opt: filter
+Mongo::validate          $target, %opts → \%result            # server-side integrity check; opts: full, repair
 Mongo::coll_stats        $target, %opts → \%stats             # collStats
 Mongo::db_stats          $db, %opts → \%stats                 # dbStats
 Mongo::explain           $target, %opts → \%plan              # opts: filter | pipeline, verbosity
@@ -288,6 +290,11 @@ Mongo::normalize_index_keys(\@keys) → \%keys   # entries: "field" | "-field" |
 Mongo::in_filter($field, \@values, %opts) → \%filter   # { $field: { $in: […] } }; opt negate → $nin
 Mongo::between_filter($field, %opts) → \%filter   # opts: gte/gt (lower), lte/lt (upper); a bound + its strict variant on one side are mutually exclusive
 Mongo::build_regex_filter($field, $value, %opts) → \%filter   # literal (regex-escaped) $regex; opts: anchor (prefix|suffix|exact|contains), ignore_case
+Mongo::or_filter(\@filters) → \%filter   # disjunction: { $or: [...] }; [] → {} ; single → unchanged (counterpart to merge_filters' $and)
+Mongo::exists_filter($field, %opts) → \%filter   # { $field: { $exists: true } }; opt exists (bool, default true)
+Mongo::elem_match_filter($field, \%query) → \%filter   # { $field: { $elemMatch: {…} } }; all conditions bind to ONE array element
+Mongo::text_filter($search, %opts) → \%filter   # { $text: { $search: … } }; opts: language, case_sensitive, diacritic_sensitive (needs a text index)
+Mongo::not_filter($field, \%expr) → \%filter   # { $field: { $not: {…} } }; negates an operator expression (rejects bare values / $or/$and/$nor)
 ```
 
 ### Plumbing
