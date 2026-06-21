@@ -95,7 +95,7 @@ val @over30 = Mongo::find "app/users",
 # Callback-per-doc variant (cdylib materializes the result, then iterates).
 Mongo::find_stream "app/events",
     filter   => { ts => { '$gte' => $cutoff } },
-    callback => fn ($d) { process $d }
+    callback => fn { process _ }
 
 # Updates.
 Mongo::update_one "app/users",
