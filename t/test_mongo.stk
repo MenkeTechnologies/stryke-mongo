@@ -71,7 +71,7 @@ if ($alive) {
 
     # 8a1. collection_specs — full specs (not just names); our scratch coll is
     # present with type "collection". A filter narrows the listing.
-    val @specs = Mongo::collection_specs("stryke_test", %conn)
+    var @specs = Mongo::collection_specs("stryke_test", %conn)
     assert_ge scalar(@specs), 1, "collection_specs: ≥1 spec for the scratch db"
     var $found_spec = 0
     for val $s (@specs) {
