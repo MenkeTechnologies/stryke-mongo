@@ -69,12 +69,23 @@ if ($alive) {
     val $idx = Mongo::create_index($tgt, { name => 1 }, unique => 1, %conn)
     assert_eq $idx, "name_1", "create_index: returns index name name_1"
 
+    # 8b. aggregate_db — database-level pipeline ($listLocalSessions runs against
+    # the db, not a collection). Just assert it returns (≥0 docs) without dying.
+    val @sess = eval { Mongo::aggregate_db("stryke_test",
+        [ { '$listLocalSessions' => +{} } ], %conn) } // ()
+    assert_ge scalar(@sess), 0, "aggregate_db: database-level pipeline returns"
+
+    # 8c. drop_indexes — drops every index except _id; idempotent enough to
+    # run after create_index. Returns 1.
+    assert_eq Mongo::drop_indexes($tgt, %conn), 1, "drop_indexes: returns 1"
+
     # 9. delete_many
     val $del = Mongo::delete_many($tgt, {}, %conn)
     assert_eq $del, 4, "delete_many: deleted=4"
 
-    # cleanup
+    # cleanup — drop_database removes the whole scratch db (and its collections).
     eval { Mongo::drop_index($tgt, "name_1", %conn) }
+    eval { Mongo::drop_collection($tgt, %conn) }
 }
 
 # ── pure helpers (no connection — always run) ────────────────────────
@@ -238,5 +249,59 @@ assert_ok $rng->{max} gt $rng->{min}, "objectid_range: max sorts after min"
 assert_dies fn { Mongo::objectid_range(+{ epoch_seconds => 100 }, +{ epoch_seconds => 50 }) }, "objectid_range: end before start dies"
 assert_dies fn { Mongo::objectid_range(+{ epoch_seconds => 100 }, +{}) }, "objectid_range: a missing time input dies"
 assert_dies fn { Mongo::parse_connection_string("postgres://localhost/x") }, "parse_connection_string rejects non-mongo scheme"
+
+# ── pure query builders (no connection — always run) ──────────────────
+
+# merge_filters: disjoint keys → shallow merge; shared key → $and (no clause lost).
+val $mf = Mongo::merge_filters([{ status => "active" }, { age => +{ '$gte' => 18 } }])
+assert_eq $mf->{status},       "active", "merge_filters: disjoint merge keeps status"
+assert_eq $mf->{age}{'$gte'},  18,       "merge_filters: disjoint merge keeps age"
+val $mfa = Mongo::merge_filters([{ age => +{ '$gte' => 18 } }, { age => +{ '$lt' => 65 } }])
+assert_eq scalar(@{ $mfa->{'$and'} }), 2, "merge_filters: shared key falls back to \$and"
+assert_eq scalar(keys %{ Mongo::merge_filters([]) }), 0, "merge_filters: empty → match-all {}"
+assert_dies fn { Mongo::merge_filters({ x => 1 }) }, "merge_filters: requires an arrayref"
+
+# build_update: assemble buckets; $unset (array or hash) normalized to "".
+val $bu = Mongo::build_update(set => { role => "admin" }, inc => { logins => 1 }, unset => ["tmp"])
+assert_eq $bu->{'$set'}{role},   "admin", "build_update: \$set carried"
+assert_eq $bu->{'$inc'}{logins}, 1,       "build_update: \$inc carried"
+assert_eq $bu->{'$unset'}{tmp},  "",      "build_update: \$unset normalized to empty string"
+assert_dies fn { Mongo::build_update() }, "build_update: nothing supplied dies"
+
+# build_sort: "-field" + [field, dir]; order preserved.
+val $bs = Mongo::build_sort(["-age", ["name", 1], ["score", "desc"]])
+assert_eq $bs->{age},   -1, "build_sort: -age → -1"
+assert_eq $bs->{name},   1, "build_sort: [name,1] → 1"
+assert_eq $bs->{score}, -1, "build_sort: [score,desc] → -1"
+assert_dies fn { Mongo::build_sort([]) }, "build_sort: empty dies"
+
+# build_projection: include / exclude modes + _id exception; mixing dies.
+assert_eq Mongo::build_projection(include => ["a", "b"])->{a}, 1, "build_projection: include → 1"
+assert_eq Mongo::build_projection(exclude => ["secret"])->{secret}, 0, "build_projection: exclude → 0"
+assert_eq Mongo::build_projection(include => ["name"], id => 0)->{_id}, 0, "build_projection: _id may ride opposite mode"
+assert_dies fn { Mongo::build_projection(include => ["a"], exclude => ["b"]) }, "build_projection: mixing modes dies"
+
+# normalize_index_keys: directions + string index types; compound order preserved.
+val $nk = Mongo::normalize_index_keys(["-created", ["loc", "2dsphere"], ["name", 1]])
+assert_eq $nk->{created}, -1,         "normalize_index_keys: -created → -1"
+assert_eq $nk->{loc},     "2dsphere", "normalize_index_keys: string type passes through"
+assert_eq $nk->{name},     1,         "normalize_index_keys: [name,1] → 1"
+assert_dies fn { Mongo::normalize_index_keys([["f", 2]]) }, "normalize_index_keys: bad direction dies"
+
+# in_filter / between_filter: operator builders.
+assert_eq Mongo::in_filter("status", ["a", "b"])->{status}{'$in'}[1], "b", "in_filter: \$in list"
+assert_eq Mongo::in_filter("status", ["x"], negate => 1)->{status}{'$nin'}[0], "x", "in_filter: negate → \$nin"
+val $bt = Mongo::between_filter("age", gte => 18, lt => 65)
+assert_eq $bt->{age}{'$gte'}, 18, "between_filter: lower inclusive bound"
+assert_eq $bt->{age}{'$lt'},  65, "between_filter: upper exclusive bound"
+assert_dies fn { Mongo::between_filter("x", gte => 1, gt => 2) }, "between_filter: bound + strict variant dies"
+assert_dies fn { Mongo::between_filter("x") }, "between_filter: no bound dies"
+
+# build_regex_filter: literal escaping + anchoring + ignore_case.
+assert_eq Mongo::build_regex_filter("name", "a.b", anchor => "exact")->{name}{'$regex'}, "^a\\.b\$", "build_regex_filter: literal . escaped, exact-anchored"
+val $brp = Mongo::build_regex_filter("name", "foo", anchor => "prefix", ignore_case => 1)
+assert_eq $brp->{name}{'$regex'},   "^foo", "build_regex_filter: prefix anchor"
+assert_eq $brp->{name}{'$options'}, "i",    "build_regex_filter: ignore_case adds i option"
+assert_dies fn { Mongo::build_regex_filter("f", "x", anchor => "bad") }, "build_regex_filter: bad anchor dies"
 
 test_run

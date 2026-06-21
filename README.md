@@ -227,10 +227,13 @@ Mongo::list_databases    %opts → @names
 Mongo::list_collections  $db, %opts → @names
 Mongo::create_collection $db, $coll, %opts → { ok, created }
 Mongo::drop_collection   $target, %opts → { ok, dropped }
+Mongo::drop_database     $db, %opts → { ok, dropped }         # delete a whole db
 Mongo::create_index      $target, \%keys, %opts → $index_name
 Mongo::create_indexes    $target, \@indexes, %opts → \%result   # [{keys, name?, unique?}]
 Mongo::drop_index        $target, $name, %opts → 1 | ""
+Mongo::drop_indexes      $target, %opts → 1 | ""              # drop ALL indexes except _id
 Mongo::indexes           $target, %opts → @specs
+Mongo::aggregate_db      $db, \@pipeline, %opts → @docs        # database-level aggregation ($currentOp, $listLocalSessions)
 Mongo::run_command       $db, \%command, %opts → \%result     # arbitrary db command
 Mongo::rename_collection $target, $to, %opts → { ok, renamed } # opt: drop_target
 Mongo::coll_stats        $target, %opts → \%stats             # collStats
@@ -269,6 +272,23 @@ Mongo::objectid_range(\%start, \%end) → { start_epoch_seconds, end_epoch_secon
 Unlike a SQL DSN, `parse_connection_string` returns a host **list** (replica
 sets) and recognizes `mongodb+srv://` — it parses structure only, never
 resolving SRV DNS.
+
+### Query builders (no connection)
+
+Pure helpers that assemble filter / update / sort / projection / index-key
+documents from convenient shapes — no FFI to mongo, no client. Hand the output
+straight to `find` / `update_one` / `create_index` / etc.
+
+```stryke
+Mongo::merge_filters(\@filters) → \%filter   # combine filter hashrefs: shallow merge when keys are disjoint, {$and:[…]} when any key is shared (no clause lost); [] → {} ; single → unchanged
+Mongo::build_update(%opts) → \%update   # opts: set (→$set), unset (arrayref|hashref →$unset, values normalized to ""), inc (→$inc); ≥1 required
+Mongo::build_sort(\@fields) → \%sort   # entries: "field" (asc) | "-field" (desc) | [field, 1|-1|"asc"|"desc"]; order preserved
+Mongo::build_projection(%opts) → \%projection   # opts: include (→1) XOR exclude (→0); id (bool) controls _id even in the opposite mode
+Mongo::normalize_index_keys(\@keys) → \%keys   # entries: "field" | "-field" | [field, 1|-1|"2dsphere"|"text"|"hashed"…]; compound order preserved
+Mongo::in_filter($field, \@values, %opts) → \%filter   # { $field: { $in: […] } }; opt negate → $nin
+Mongo::between_filter($field, %opts) → \%filter   # opts: gte/gt (lower), lte/lt (upper); a bound + its strict variant on one side are mutually exclusive
+Mongo::build_regex_filter($field, $value, %opts) → \%filter   # literal (regex-escaped) $regex; opts: anchor (prefix|suffix|exact|contains), ignore_case
+```
 
 ### Plumbing
 
@@ -393,9 +413,12 @@ stryke-mongo/
 
 ## [0x09] Roadmap
 
-Shipped: CRUD + aggregate + index admin, atomic findAndModify (update/replace/
-delete), distinct, estimated count, collection create/drop, arbitrary
-`run_command`, and `upsert` / `array_filters` write options.
+Shipped: CRUD + aggregate (collection and database level) + index admin (create/
+drop/list, plus drop-all), atomic findAndModify (update/replace/delete), distinct,
+estimated count, collection create/drop/rename, database drop, arbitrary
+`run_command`, `upsert` / `array_filters` write options, and connection-free
+query builders (filter merge, update / sort / projection / index-key assembly,
+`$in` / range / literal-`$regex` filters).
 
 | Open | Later |
 |---|---|

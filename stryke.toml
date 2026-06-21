@@ -38,6 +38,9 @@ exports = [
     "mongo__create_collection",
     "mongo__drop_collection",
     "mongo__run_command",
+    "mongo__drop_database",
+    "mongo__drop_indexes",
+    "mongo__aggregate_db",
     "mongo__rename_collection",
     "mongo__coll_stats",
     "mongo__db_stats",
@@ -64,6 +67,14 @@ exports = [
     "mongo__objectid_from_time",
     "mongo__objectid_max_from_time",
     "mongo__objectid_range",
+    "mongo__merge_filters",
+    "mongo__build_update",
+    "mongo__build_sort",
+    "mongo__build_projection",
+    "mongo__normalize_index_keys",
+    "mongo__in_filter",
+    "mongo__between_filter",
+    "mongo__build_regex_filter",
 ]
 
 [scripts]

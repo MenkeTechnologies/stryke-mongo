@@ -257,6 +257,30 @@ fn Mongo::run_command ($db, $command, %opts) {
     Mongo::_decode("run_command", mongo__run_command(to_json($r)))->{result}
 }
 
+## Drop database $db — deletes all of its data, collections, and indexes.
+## Returns { ok, dropped }.
+fn Mongo::drop_database ($db, %opts) {
+    val $r = Mongo::_req({ db => $db }, \%opts)
+    Mongo::_decode("drop_database", mongo__drop_database(to_json($r)))
+}
+
+## Drop ALL indexes on $target ("db.coll") except the implicit _id index.
+## Returns 1 on success.
+fn Mongo::drop_indexes ($target, %opts) {
+    val $r = Mongo::_req({ target => $target }, \%opts)
+    Mongo::_decode("drop_indexes", mongo__drop_indexes(to_json($r)))->{ok} ? 1 : 0
+}
+
+## Database-level aggregation (db.aggregate) for admin pipelines such as
+## $currentOp and $listLocalSessions that target the database, not a collection.
+## $pipeline is an arrayref of stages. Returns an array of result docs.
+fn Mongo::aggregate_db ($db, $pipeline, %opts) {
+    die "Mongo::aggregate_db: pipeline must be arrayref" unless ref($pipeline) eq "ARRAY"
+    val $r = Mongo::_req({ db => $db, pipeline => $pipeline }, \%opts)
+    val $o = Mongo::_decode("aggregate_db", mongo__aggregate_db(to_json($r)))
+    @{ $o->{docs} }
+}
+
 
 # ── convenience composites ──────────────────────────────────────────
 #
@@ -502,4 +526,82 @@ fn Mongo::objectid_max_from_time (%opts) {
 ## Returns a hashref { start_epoch_seconds, end_epoch_seconds, min, max }.
 fn Mongo::objectid_range ($start, $end) {
     Mongo::_decode("objectid_range", mongo__objectid_range(to_json({ start => $start, end => $end })))
+}
+
+# ── pure query builders (no connection) ───────────────────────────────
+
+## Combine $filters (an arrayref of filter hashrefs) into one filter. When the
+## filters share no key the result is their shallow merge; when any key is shared
+## the result is { '$and' => [ … ] } so no clause is dropped. An empty array
+## yields {} (match all); a single filter is returned unchanged. Returns the
+## combined filter hashref.
+fn Mongo::merge_filters ($filters) {
+    die "Mongo::merge_filters: filters must be an arrayref" unless ref($filters) eq "ARRAY"
+    Mongo::_decode("merge_filters", mongo__merge_filters(to_json({ filters => $filters })))->{filter}
+}
+
+## Assemble an update document from operator buckets. %opts: set (hashref →
+## '$set'), unset (arrayref of field names OR hashref → '$unset', values
+## normalized to ""), inc (hashref → '$inc'). At least one must be non-empty.
+## Returns the update hashref ready for update_one / update_many.
+fn Mongo::build_update (%opts) {
+    Mongo::_decode("build_update",
+        mongo__build_update(to_json({ set => $opts{set}, unset => $opts{unset}, inc => $opts{inc} })))->{update}
+}
+
+## Normalize a sort spec into an ordered sort hashref. $fields is an arrayref;
+## each entry is "field" (asc), "-field" (desc), or [field, dir] where dir is
+## 1/-1 or "asc"/"desc". Order is preserved. Returns the sort hashref.
+fn Mongo::build_sort ($fields) {
+    die "Mongo::build_sort: fields must be an arrayref" unless ref($fields) eq "ARRAY"
+    Mongo::_decode("build_sort", mongo__build_sort(to_json({ fields => $fields })))->{sort}
+}
+
+## Build a projection hashref from field lists. %opts: include (arrayref →
+## { f => 1 }) OR exclude (arrayref → { f => 0 }); the _id field may ride with the
+## opposite mode via id (bool). Mixing include and exclude (other than _id) dies.
+## Returns the projection hashref.
+fn Mongo::build_projection (%opts) {
+    # `id` is tri-state (absent = mongo default, true = keep, false = drop), so
+    # forward it only when the caller set it — and as a plain 0/1 number, since
+    # stryke's to_json does not emit JSON booleans for \1 / \0.
+    var %r = (include => $opts{include}, exclude => $opts{exclude})
+    $r{id} = ($opts{id} ? 1 : 0) if exists $opts{id} && defined $opts{id}
+    Mongo::_decode("build_projection", mongo__build_projection(to_json(\%r)))->{projection}
+}
+
+## Normalize an index-key spec into the keys hashref create_index expects.
+## $keys is an arrayref; each entry is "field" (asc), "-field" (desc), or
+## [field, type] where type is 1/-1 or a string like "2dsphere"/"text"/"hashed".
+## Compound-key order is preserved. Returns the keys hashref.
+fn Mongo::normalize_index_keys ($keys) {
+    die "Mongo::normalize_index_keys: keys must be an arrayref" unless ref($keys) eq "ARRAY"
+    Mongo::_decode("normalize_index_keys", mongo__normalize_index_keys(to_json({ keys => $keys })))->{keys}
+}
+
+## Build an '$in' (or '$nin' when negate => 1) filter for $field over $values
+## (an arrayref). Returns the filter hashref { $field => { '$in' => [ … ] } }.
+fn Mongo::in_filter ($field, $values, %opts) {
+    die "Mongo::in_filter: values must be an arrayref" unless ref($values) eq "ARRAY"
+    Mongo::_decode("in_filter",
+        mongo__in_filter(to_json({ field => $field, values => $values, negate => ($opts{negate} ? 1 : 0) })))->{filter}
+}
+
+## Build a range filter for $field from optional bounds. %opts: gte/gt (lower,
+## inclusive/exclusive) and lte/lt (upper); a bound and its strict variant on the
+## same side are mutually exclusive, and at least one bound is required. Returns
+## the filter hashref { $field => { '$gte' => …, '$lt' => … } }.
+fn Mongo::between_filter ($field, %opts) {
+    Mongo::_decode("between_filter",
+        mongo__between_filter(to_json({ field => $field, gte => $opts{gte}, gt => $opts{gt}, lte => $opts{lte}, lt => $opts{lt} })))->{filter}
+}
+
+## Build an anchored, optionally case-insensitive '$regex' filter matching the
+## LITERAL $value (regex-escaped, so metacharacters never act as a pattern).
+## %opts: anchor ("prefix" → ^v, "suffix" → v$, "exact" → ^v$, "contains"/absent
+## → unanchored), ignore_case (bool → adds the "i" option). Returns the filter
+## hashref { $field => { '$regex' => …, '$options' => … } }.
+fn Mongo::build_regex_filter ($field, $value, %opts) {
+    Mongo::_decode("build_regex_filter",
+        mongo__build_regex_filter(to_json({ field => $field, value => $value, anchor => $opts{anchor}, ignore_case => ($opts{ignore_case} ? 1 : 0) })))->{filter}
 }

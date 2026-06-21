@@ -265,6 +265,18 @@ fn opt_doc(opts: &Value, key: &str) -> Option<Document> {
     }
 }
 
+/// Read a flag that stryke may send as a JSON bool OR a 0/1 number (stryke's
+/// `to_json` does not always emit JSON booleans). `Some(true)`/`Some(false)`
+/// when the key is present, `None` when absent — so callers can tell "not set"
+/// from "set false". Mirrors the `srv` handling in `build_connection_string`.
+fn opt_truthy(opts: &Value, key: &str) -> Option<bool> {
+    match opts.get(key) {
+        Some(Value::Bool(b)) => Some(*b),
+        Some(Value::Number(n)) => Some(n.as_f64().is_some_and(|x| x != 0.0)),
+        _ => None,
+    }
+}
+
 /// `array_filters` opt → Vec<Document> when present.
 fn opt_array_filters(opts: &Value) -> Option<Vec<Document>> {
     opts.get("array_filters")
@@ -427,6 +439,45 @@ async fn op_drop_collection(opts: Value) -> Result<Value> {
     let (db, coll) = parse_target(&opts, None)?;
     c.database(&db).collection::<Document>(&coll).drop().await?;
     Ok(json!({"ok": true, "dropped": coll}))
+}
+
+async fn op_drop_database(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let db = opts["db"].as_str().ok_or_else(|| anyhow!("missing db"))?;
+    c.database(db).drop().await?;
+    Ok(json!({"ok": true, "dropped": db}))
+}
+
+async fn op_drop_indexes(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let (db, coll) = parse_target(&opts, None)?;
+    c.database(&db)
+        .collection::<Document>(&coll)
+        .drop_indexes()
+        .await?;
+    Ok(json!({"ok": true}))
+}
+
+/// Database-level aggregation (`db.aggregate(...)`) for admin pipelines such as
+/// `$currentOp` and `$listLocalSessions` that run against the database rather
+/// than a single collection. opts: `db` (required), `pipeline` (array).
+async fn op_aggregate_db(opts: Value) -> Result<Value> {
+    let c = get_client(&opts).await?;
+    let db = opts["db"].as_str().ok_or_else(|| anyhow!("missing db"))?;
+    let pipeline_v = opts["pipeline"]
+        .as_array()
+        .ok_or_else(|| anyhow!("missing pipeline (array)"))?;
+    let pipeline: Result<Vec<Document>> = pipeline_v.iter().map(json_to_doc).collect();
+    let mut cursor = c
+        .database(db)
+        .aggregate(pipeline?)
+        .with_options(AggregateOptions::default())
+        .await?;
+    let mut out: Vec<Value> = Vec::new();
+    while let Some(d) = cursor.try_next().await? {
+        out.push(doc_to_json(&d)?);
+    }
+    Ok(json!({"docs": out}))
 }
 
 async fn op_run_command(opts: Value) -> Result<Value> {
@@ -1356,6 +1407,350 @@ fn op_objectid_range(opts: Value) -> Result<Value> {
     }))
 }
 
+/// Combine several filter documents into one. opts: `filters` (array of
+/// objects). When no two filters share a key the result is their shallow merge
+/// (later filters override earlier on a literal key clash within that fast
+/// path); when ANY key appears in more than one filter — the typical case for
+/// composing reusable predicates — the result is `{"$and": [f1, f2, …]}` so no
+/// clause is silently dropped. An empty `filters` array yields `{}` (match
+/// everything); a single filter is returned unchanged. Pure.
+fn op_merge_filters(opts: Value) -> Result<Value> {
+    let filters = opts
+        .get("filters")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing filters (array of objects)"))?;
+    let mut docs: Vec<&serde_json::Map<String, Value>> = Vec::with_capacity(filters.len());
+    for f in filters {
+        let m = f
+            .as_object()
+            .ok_or_else(|| anyhow!("each filter must be an object"))?;
+        docs.push(m);
+    }
+    match docs.len() {
+        0 => return Ok(json!({ "filter": {} })),
+        1 => return Ok(json!({ "filter": filters[0] })),
+        _ => {}
+    }
+    // A key shared across two filters means a plain merge would lose a clause —
+    // fall back to $and. Otherwise the shallow merge is the more readable form.
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut collision = false;
+    for m in &docs {
+        for k in m.keys() {
+            if !seen.insert(k.as_str()) {
+                collision = true;
+                break;
+            }
+        }
+        if collision {
+            break;
+        }
+    }
+    if collision {
+        Ok(json!({ "filter": { "$and": filters } }))
+    } else {
+        let mut merged = serde_json::Map::new();
+        for m in &docs {
+            for (k, v) in m.iter() {
+                merged.insert(k.clone(), v.clone());
+            }
+        }
+        Ok(json!({ "filter": Value::Object(merged) }))
+    }
+}
+
+/// Assemble a MongoDB update document from the common operator buckets. opts:
+/// `set` (object → `$set`), `unset` (array of field names or object → `$unset`,
+/// each value normalized to `""`), and `inc` (object → `$inc`). At least one
+/// must be present and non-empty. The output is `{ "$set": …, "$unset": …,
+/// "$inc": … }` carrying only the buckets supplied — pass it straight to
+/// `update_one` / `update_many`. Returns `{update}`. Pure.
+fn op_build_update(opts: Value) -> Result<Value> {
+    let mut update = serde_json::Map::new();
+    if let Some(set) = opts.get("set").and_then(Value::as_object) {
+        if !set.is_empty() {
+            update.insert("$set".into(), Value::Object(set.clone()));
+        }
+    }
+    if let Some(inc) = opts.get("inc").and_then(Value::as_object) {
+        if !inc.is_empty() {
+            update.insert("$inc".into(), Value::Object(inc.clone()));
+        }
+    }
+    // $unset accepts either an array of field names or an object; mongo ignores
+    // the values, so normalize every field to "" for a canonical shape.
+    let unset = match opts.get("unset") {
+        Some(Value::Array(a)) => {
+            let mut m = serde_json::Map::new();
+            for f in a {
+                let name = f
+                    .as_str()
+                    .ok_or_else(|| anyhow!("unset array entries must be field-name strings"))?;
+                m.insert(name.to_string(), json!(""));
+            }
+            m
+        }
+        Some(Value::Object(o)) => o.keys().map(|k| (k.clone(), json!(""))).collect(),
+        Some(Value::Null) | None => serde_json::Map::new(),
+        Some(other) => {
+            return Err(anyhow!(
+                "unset must be an array of field names or an object, got {other}"
+            ))
+        }
+    };
+    if !unset.is_empty() {
+        update.insert("$unset".into(), Value::Object(unset));
+    }
+    if update.is_empty() {
+        return Err(anyhow!(
+            "build_update needs at least one non-empty of set, unset, inc"
+        ));
+    }
+    Ok(json!({ "update": Value::Object(update) }))
+}
+
+/// Normalize a sort specification into an ordered MongoDB sort document. opts:
+/// `fields` (array). Each entry is either a `[field, direction]` two-element
+/// array (direction `1`/`-1`, or `"asc"`/`"desc"`) or a bare string field with
+/// an optional leading `-` for descending (`"-age"` → `{age: -1}`). Insertion
+/// order is preserved (sort is order-sensitive). Returns `{sort}`. Pure.
+fn op_build_sort(opts: Value) -> Result<Value> {
+    let fields = opts
+        .get("fields")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing fields (array)"))?;
+    let mut sort = serde_json::Map::new();
+    for f in fields {
+        let (name, dir): (String, i32) = match f {
+            Value::String(s) => {
+                if let Some(stripped) = s.strip_prefix('-') {
+                    (stripped.to_string(), -1)
+                } else {
+                    (s.clone(), 1)
+                }
+            }
+            Value::Array(pair) if pair.len() == 2 => {
+                let name = pair[0]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("sort field name must be a string"))?
+                    .to_string();
+                let dir = match &pair[1] {
+                    Value::Number(n) if n.as_i64() == Some(1) => 1,
+                    Value::Number(n) if n.as_i64() == Some(-1) => -1,
+                    Value::String(s) if s == "asc" => 1,
+                    Value::String(s) if s == "desc" => -1,
+                    other => {
+                        return Err(anyhow!("sort direction must be 1|-1|asc|desc, got {other}"))
+                    }
+                };
+                (name, dir)
+            }
+            other => {
+                return Err(anyhow!(
+                    "each field must be \"name\", \"-name\", or [name, dir], got {other}"
+                ))
+            }
+        };
+        if name.is_empty() {
+            return Err(anyhow!("sort field name must not be empty"));
+        }
+        sort.insert(name, json!(dir));
+    }
+    if sort.is_empty() {
+        return Err(anyhow!("fields must be non-empty"));
+    }
+    Ok(json!({ "sort": Value::Object(sort) }))
+}
+
+/// Build a MongoDB projection document from field lists. opts: exactly one of
+/// `include` (array of fields → `{f: 1}`) or `exclude` (array → `{f: 0}`); the
+/// `_id` field may be combined with the other mode (mongo's one documented
+/// exception). `id` (bool, default keep) controls `_id` explicitly. Mixing
+/// include and exclude (other than `_id`) is rejected, matching the server.
+/// Returns `{projection}`. Pure.
+fn op_build_projection(opts: Value) -> Result<Value> {
+    let include = opts.get("include").and_then(Value::as_array);
+    let exclude = opts.get("exclude").and_then(Value::as_array);
+    if include.is_some() && exclude.is_some() {
+        return Err(anyhow!(
+            "cannot mix include and exclude (except for _id via the `id` flag)"
+        ));
+    }
+    let mut proj = serde_json::Map::new();
+    let mode_value = if exclude.is_some() { 0 } else { 1 };
+    if let Some(list) = include.or(exclude) {
+        for f in list {
+            let name = f
+                .as_str()
+                .ok_or_else(|| anyhow!("projection field names must be strings"))?;
+            proj.insert(name.to_string(), json!(mode_value));
+        }
+    }
+    // Explicit _id control: default is mongo's (kept in include mode, dropped in
+    // exclude mode), an `id` flag overrides it.
+    if let Some(keep) = opt_truthy(&opts, "id") {
+        proj.insert("_id".into(), json!(if keep { 1 } else { 0 }));
+    }
+    if proj.is_empty() {
+        return Err(anyhow!(
+            "need a non-empty include or exclude (or an id flag)"
+        ));
+    }
+    Ok(json!({ "projection": Value::Object(proj) }))
+}
+
+/// Normalize an index-key specification into the document `create_index` /
+/// `create_indexes` expect. opts: `keys` (array). Each entry is either a
+/// `[field, type]` two-element array (type `1`/`-1` for ascending/descending, or
+/// a string like `"2dsphere"`, `"text"`, `"hashed"`) or a bare string field with
+/// an optional leading `-` for descending (`"-created"` → `{created: -1}`).
+/// Insertion order is preserved (compound-index key order is significant).
+/// Returns `{keys}`. The inverse direction parsing matches `build_sort`. Pure.
+fn op_normalize_index_keys(opts: Value) -> Result<Value> {
+    let entries = opts
+        .get("keys")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing keys (array)"))?;
+    let mut keys = serde_json::Map::new();
+    for e in entries {
+        let (name, val): (String, Value) = match e {
+            Value::String(s) => {
+                if let Some(stripped) = s.strip_prefix('-') {
+                    (stripped.to_string(), json!(-1))
+                } else {
+                    (s.clone(), json!(1))
+                }
+            }
+            Value::Array(pair) if pair.len() == 2 => {
+                let name = pair[0]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("index field name must be a string"))?
+                    .to_string();
+                let val = match &pair[1] {
+                    Value::Number(n) if n.as_i64() == Some(1) => json!(1),
+                    Value::Number(n) if n.as_i64() == Some(-1) => json!(-1),
+                    // String index types (2dsphere/text/hashed/…) pass through verbatim.
+                    Value::String(s) if !s.is_empty() => json!(s),
+                    other => {
+                        return Err(anyhow!(
+                            "index key type must be 1|-1 or a non-empty type string, got {other}"
+                        ))
+                    }
+                };
+                (name, val)
+            }
+            other => {
+                return Err(anyhow!(
+                    "each key must be \"field\", \"-field\", or [field, type], got {other}"
+                ))
+            }
+        };
+        if name.is_empty() {
+            return Err(anyhow!("index field name must not be empty"));
+        }
+        keys.insert(name, val);
+    }
+    if keys.is_empty() {
+        return Err(anyhow!("keys must be non-empty"));
+    }
+    Ok(json!({ "keys": Value::Object(keys) }))
+}
+
+/// Build an `$in` (or `$nin`) filter for a field. opts: `field` (required),
+/// `values` (array, may be empty), and `negate` (bool → use `$nin`). Returns
+/// `{filter}` shaped `{ field: { "$in": [...] } }`. A small intention-revealing
+/// builder so callers don't hand-assemble the operator object. Pure.
+fn op_in_filter(opts: Value) -> Result<Value> {
+    let field = opts
+        .get("field")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing field"))?;
+    let values = opts
+        .get("values")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("missing values (array)"))?;
+    let op = if opt_truthy(&opts, "negate") == Some(true) {
+        "$nin"
+    } else {
+        "$in"
+    };
+    Ok(json!({ "filter": { field: { op: values } } }))
+}
+
+/// Build a range filter for a field from optional bounds. opts: `field`
+/// (required); `gte`/`gt` (lower bound, inclusive/exclusive) and `lte`/`lt`
+/// (upper bound) — supply any subset, but a bound and its strict variant on the
+/// same side are mutually exclusive. At least one bound is required. Returns
+/// `{filter}` shaped `{ field: { "$gte": …, "$lt": … } }`. Pure.
+fn op_between_filter(opts: Value) -> Result<Value> {
+    let field = opts
+        .get("field")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing field"))?;
+    let mut range = serde_json::Map::new();
+    let mut put = |gte: &str, gt: &str| -> Result<()> {
+        let inc = opts.get(gte).filter(|v| !v.is_null());
+        let exc = opts.get(gt).filter(|v| !v.is_null());
+        if inc.is_some() && exc.is_some() {
+            return Err(anyhow!("{gte} and {gt} are mutually exclusive"));
+        }
+        if let Some(v) = inc {
+            range.insert(format!("${gte}"), v.clone());
+        } else if let Some(v) = exc {
+            range.insert(format!("${gt}"), v.clone());
+        }
+        Ok(())
+    };
+    put("gte", "gt")?;
+    put("lte", "lt")?;
+    if range.is_empty() {
+        return Err(anyhow!("need at least one of gte, gt, lte, lt"));
+    }
+    Ok(json!({ "filter": { field: Value::Object(range) } }))
+}
+
+/// Build an anchored, optionally case-insensitive `$regex` filter that matches a
+/// LITERAL substring/prefix/suffix — the user input is regex-escaped so no
+/// metacharacter is interpreted. opts: `field` (required), `value` (required
+/// literal text), `anchor` (`"prefix"` → `^v`, `"suffix"` → `v$`, `"exact"` →
+/// `^v$`, or `"contains"` / absent → unanchored), and `ignore_case` (bool →
+/// adds the `i` option). Returns `{filter}` shaped `{ field: { "$regex": …,
+/// "$options": … } }`. Pure.
+fn op_build_regex_filter(opts: Value) -> Result<Value> {
+    let field = opts
+        .get("field")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow!("missing field"))?;
+    let value = opts
+        .get("value")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("missing value"))?;
+    let escaped = op_escape_regex(json!({ "value": value }))?["escaped"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    let pattern = match opts.get("anchor").and_then(Value::as_str) {
+        Some("prefix") => format!("^{escaped}"),
+        Some("suffix") => format!("{escaped}$"),
+        Some("exact") => format!("^{escaped}$"),
+        Some("contains") | None => escaped,
+        Some(other) => {
+            return Err(anyhow!(
+                "anchor must be prefix|suffix|exact|contains, got `{other}`"
+            ))
+        }
+    };
+    let mut regex = serde_json::Map::new();
+    regex.insert("$regex".into(), json!(pattern));
+    if opt_truthy(&opts, "ignore_case") == Some(true) {
+        regex.insert("$options".into(), json!("i"));
+    }
+    Ok(json!({ "filter": { field: Value::Object(regex) } }))
+}
+
 // ── exports ─────────────────────────────────────────────────────────────────
 
 #[no_mangle]
@@ -1496,6 +1891,21 @@ pub extern "C" fn mongo__run_command(args: *const c_char) -> *const c_char {
 }
 
 #[no_mangle]
+pub extern "C" fn mongo__drop_database(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_drop_database)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__drop_indexes(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_drop_indexes)
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__aggregate_db(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, op_aggregate_db)
+}
+
+#[no_mangle]
 pub extern "C" fn mongo__rename_collection(args: *const c_char) -> *const c_char {
     ffi_call_async(args, op_rename_collection)
 }
@@ -1626,6 +2036,46 @@ pub extern "C" fn mongo__objectid_max_from_time(args: *const c_char) -> *const c
 #[no_mangle]
 pub extern "C" fn mongo__objectid_range(args: *const c_char) -> *const c_char {
     ffi_call_async(args, |opts| async move { op_objectid_range(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__merge_filters(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_merge_filters(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__build_update(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_update(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__build_sort(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_sort(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__build_projection(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_projection(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__normalize_index_keys(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_normalize_index_keys(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__in_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_in_filter(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__between_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_between_filter(opts) })
+}
+
+#[no_mangle]
+pub extern "C" fn mongo__build_regex_filter(args: *const c_char) -> *const c_char {
+    ffi_call_async(args, |opts| async move { op_build_regex_filter(opts) })
 }
 
 #[cfg(test)]
@@ -2867,5 +3317,239 @@ mod tests {
         .is_err());
         assert!(op_objectid_range(json!({"start": {"epoch_seconds": 100}})).is_err());
         assert!(op_objectid_range(json!({})).is_err());
+    }
+
+    // ── pure query-builder helpers ───────────────────────────────────────────
+
+    /// `merge_filters` shallow-merges when keys are disjoint but falls back to
+    /// `$and` the moment any key is shared, so no clause is silently lost. Pin
+    /// both paths plus the empty/single shortcuts — a refactor that always
+    /// merged would drop the second `age` clause here, matching the wrong docs.
+    #[test]
+    fn merge_filters_disjoint_merges_shared_keys_use_and() {
+        // Disjoint keys → shallow merge into one object.
+        let merged = op_merge_filters(json!({
+            "filters": [{"status": "active"}, {"age": {"$gte": 18}}]
+        }))
+        .unwrap();
+        assert_eq!(merged["filter"]["status"], json!("active"));
+        assert_eq!(merged["filter"]["age"]["$gte"], json!(18));
+        assert!(
+            merged["filter"].get("$and").is_none(),
+            "disjoint filters must NOT wrap in $and"
+        );
+
+        // Shared key (`age` twice) → $and so both clauses survive.
+        let anded = op_merge_filters(json!({
+            "filters": [{"age": {"$gte": 18}}, {"age": {"$lt": 65}}]
+        }))
+        .unwrap();
+        let and = anded["filter"]["$and"]
+            .as_array()
+            .expect("shared-key merge must produce $and");
+        assert_eq!(and.len(), 2, "both age clauses must be preserved");
+        assert_eq!(and[0]["age"]["$gte"], json!(18));
+        assert_eq!(and[1]["age"]["$lt"], json!(65));
+
+        // Empty → match-all; single → unchanged.
+        assert_eq!(
+            op_merge_filters(json!({"filters": []})).unwrap()["filter"],
+            json!({})
+        );
+        assert_eq!(
+            op_merge_filters(json!({"filters": [{"x": 1}]})).unwrap()["filter"],
+            json!({"x": 1})
+        );
+        assert!(op_merge_filters(json!({})).is_err());
+        assert!(op_merge_filters(json!({"filters": [42]})).is_err());
+    }
+
+    /// `build_update` collects only the buckets supplied and normalizes `$unset`
+    /// (array OR object) to the canonical `{field: ""}` shape mongo expects.
+    /// Empty everything must error rather than emit an empty update (which mongo
+    /// rejects with a confusing wire error).
+    #[test]
+    fn build_update_assembles_buckets_and_normalizes_unset() {
+        let u = op_build_update(json!({
+            "set": {"role": "admin"},
+            "inc": {"logins": 1},
+            "unset": ["tmp", "old"],
+        }))
+        .unwrap();
+        assert_eq!(u["update"]["$set"]["role"], json!("admin"));
+        assert_eq!(u["update"]["$inc"]["logins"], json!(1));
+        // Array form normalized to {field: ""}.
+        assert_eq!(u["update"]["$unset"]["tmp"], json!(""));
+        assert_eq!(u["update"]["$unset"]["old"], json!(""));
+
+        // Object form of unset normalizes the same way (values discarded).
+        let u2 = op_build_update(json!({"unset": {"a": 1, "b": "anything"}})).unwrap();
+        assert_eq!(u2["update"]["$unset"]["a"], json!(""));
+        assert_eq!(u2["update"]["$unset"]["b"], json!(""));
+        assert!(
+            u2["update"].get("$set").is_none(),
+            "absent buckets must not appear"
+        );
+
+        // Nothing supplied → error (never an empty {} update).
+        assert!(op_build_update(json!({})).is_err());
+        assert!(op_build_update(json!({"set": {}, "inc": {}})).is_err());
+        // Non-string array entry in unset → error.
+        assert!(op_build_update(json!({"unset": [1]})).is_err());
+    }
+
+    /// `build_sort` accepts `"-field"` shorthand and `[field, dir]` pairs and —
+    /// the load-bearing property — preserves insertion order, since sort is
+    /// order-sensitive. Pin the order with a reversed-vs-alphabetical key set so
+    /// an accidental map sort is unambiguously caught.
+    #[test]
+    fn build_sort_preserves_order_and_parses_directions() {
+        let s = op_build_sort(json!({
+            "fields": ["-age", ["name", 1], ["score", "desc"], "city"]
+        }))
+        .unwrap();
+        assert_eq!(s["sort"]["age"], json!(-1));
+        assert_eq!(s["sort"]["name"], json!(1));
+        assert_eq!(s["sort"]["score"], json!(-1));
+        assert_eq!(s["sort"]["city"], json!(1));
+        let keys: Vec<&str> = s["sort"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            vec!["age", "name", "score", "city"],
+            "sort key order was not preserved — a sorting map crept in"
+        );
+        assert!(op_build_sort(json!({"fields": []})).is_err());
+        assert!(op_build_sort(json!({"fields": [["f", 2]]})).is_err());
+        assert!(op_build_sort(json!({"fields": [["", 1]]})).is_err());
+    }
+
+    /// `build_projection` rejects mixing include+exclude (mongo's rule) but lets
+    /// `_id` ride alongside the opposite mode via the `id` flag. Pin both the
+    /// inclusion/exclusion modes and the `_id` exception.
+    #[test]
+    fn build_projection_modes_and_id_exception() {
+        assert_eq!(
+            op_build_projection(json!({"include": ["a", "b"]})).unwrap()["projection"],
+            json!({"a": 1, "b": 1})
+        );
+        assert_eq!(
+            op_build_projection(json!({"exclude": ["secret"]})).unwrap()["projection"],
+            json!({"secret": 0})
+        );
+        // _id may be dropped while including other fields (the documented exception).
+        let p = op_build_projection(json!({"include": ["name"], "id": false})).unwrap();
+        assert_eq!(p["projection"]["name"], json!(1));
+        assert_eq!(p["projection"]["_id"], json!(0));
+        // Mixing include+exclude (other than _id) is rejected.
+        assert!(op_build_projection(json!({"include": ["a"], "exclude": ["b"]})).is_err());
+        assert!(op_build_projection(json!({})).is_err());
+    }
+
+    /// `normalize_index_keys` mirrors `build_sort`'s direction parsing but also
+    /// passes string index types (`2dsphere`, `text`, `hashed`) through
+    /// verbatim, and preserves compound-key order. Pin the string-type path —
+    /// a refactor that coerced every value to ±1 would silently break geo/text
+    /// indexes.
+    #[test]
+    fn normalize_index_keys_directions_string_types_and_order() {
+        let k = op_normalize_index_keys(json!({
+            "keys": ["-created", ["loc", "2dsphere"], ["name", 1]]
+        }))
+        .unwrap();
+        assert_eq!(k["keys"]["created"], json!(-1));
+        assert_eq!(
+            k["keys"]["loc"],
+            json!("2dsphere"),
+            "string index type was coerced — geo/text indexes would break"
+        );
+        assert_eq!(k["keys"]["name"], json!(1));
+        let order: Vec<&str> = k["keys"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(order, vec!["created", "loc", "name"]);
+        assert!(op_normalize_index_keys(json!({"keys": []})).is_err());
+        assert!(op_normalize_index_keys(json!({"keys": [["f", 2]]})).is_err());
+    }
+
+    /// `in_filter` builds `$in`/`$nin` and `between_filter` builds a one-sided or
+    /// two-sided range, rejecting a bound + its strict variant on the same side.
+    /// Pin both builders' shapes — they exist so callers stop hand-assembling
+    /// operator objects (and getting them subtly wrong).
+    #[test]
+    fn in_filter_and_between_filter_shapes() {
+        assert_eq!(
+            op_in_filter(json!({"field": "status", "values": ["a", "b"]})).unwrap()["filter"],
+            json!({"status": {"$in": ["a", "b"]}})
+        );
+        assert_eq!(
+            op_in_filter(json!({"field": "status", "values": ["x"], "negate": true})).unwrap()
+                ["filter"],
+            json!({"status": {"$nin": ["x"]}})
+        );
+        // Empty values is legal ($in: [] matches nothing — a valid query).
+        assert_eq!(
+            op_in_filter(json!({"field": "f", "values": []})).unwrap()["filter"],
+            json!({"f": {"$in": []}})
+        );
+        assert!(op_in_filter(json!({"field": "", "values": []})).is_err());
+        assert!(op_in_filter(json!({"field": "f"})).is_err());
+
+        // Inclusive + exclusive two-sided range.
+        assert_eq!(
+            op_between_filter(json!({"field": "age", "gte": 18, "lt": 65})).unwrap()["filter"],
+            json!({"age": {"$gte": 18, "$lt": 65}})
+        );
+        // One-sided is fine.
+        assert_eq!(
+            op_between_filter(json!({"field": "n", "gt": 0})).unwrap()["filter"],
+            json!({"n": {"$gt": 0}})
+        );
+        // gte + gt on the same side is contradictory → error.
+        assert!(op_between_filter(json!({"field": "x", "gte": 1, "gt": 2})).is_err());
+        // No bound at all → error.
+        assert!(op_between_filter(json!({"field": "x"})).is_err());
+    }
+
+    /// `build_regex_filter` escapes the literal input so metacharacters never act
+    /// as a pattern, then anchors per the `anchor` opt and adds the `i` option on
+    /// request. The escaping is the security-relevant property: user-supplied
+    /// `.` / `^` / `$` must NOT broaden the match. Pin escaping + every anchor.
+    #[test]
+    fn build_regex_filter_escapes_and_anchors() {
+        // Literal `a.b` must be escaped so `.` is not "any char".
+        let exact = op_build_regex_filter(json!({
+            "field": "name", "value": "a.b", "anchor": "exact"
+        }))
+        .unwrap();
+        assert_eq!(exact["filter"]["name"]["$regex"], json!("^a\\.b$"));
+
+        let prefix = op_build_regex_filter(json!({
+            "field": "name", "value": "foo", "anchor": "prefix", "ignore_case": true
+        }))
+        .unwrap();
+        assert_eq!(prefix["filter"]["name"]["$regex"], json!("^foo"));
+        assert_eq!(prefix["filter"]["name"]["$options"], json!("i"));
+
+        let suffix =
+            op_build_regex_filter(json!({"field": "f", "value": "x", "anchor": "suffix"})).unwrap();
+        assert_eq!(suffix["filter"]["f"]["$regex"], json!("x$"));
+
+        // Default / contains → unanchored, no options key.
+        let contains = op_build_regex_filter(json!({"field": "f", "value": "y"})).unwrap();
+        assert_eq!(contains["filter"]["f"]["$regex"], json!("y"));
+        assert!(contains["filter"]["f"].get("$options").is_none());
+
+        assert!(
+            op_build_regex_filter(json!({"field": "f", "value": "x", "anchor": "bad"})).is_err()
+        );
+        assert!(op_build_regex_filter(json!({"field": "", "value": "x"})).is_err());
     }
 }
