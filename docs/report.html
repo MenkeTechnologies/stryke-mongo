@@ -97,11 +97,32 @@
       <p class="tutorial-subtitle">The official <code>mongodb</code> Rust crate pulls in tokio, rustls, a DNS resolver, and the BSON stack. Ships once as an opt-in package.</p>
 
       <div class="stat-grid">
+        <div class="stat-card"><div class="stat-val">75</div><div class="stat-label">Public Mongo:: fns</div></div>
+        <div class="stat-card"><div class="stat-val cyan">71</div><div class="stat-label">FFI exports</div></div>
+        <div class="stat-card"><div class="stat-val green">13</div><div class="stat-label">Query builders</div></div>
+        <div class="stat-card"><div class="stat-val green">9</div><div class="stat-label">ObjectId helpers</div></div>
         <div class="stat-card"><div class="stat-val">cdylib</div><div class="stat-label">Crate type</div></div>
         <div class="stat-card"><div class="stat-val cyan">opt-in</div><div class="stat-label">Tier</div></div>
         <div class="stat-card"><div class="stat-val cyan">dlopen</div><div class="stat-label">Load model</div></div>
         <div class="stat-card"><div class="stat-val">JSON-over-FFI</div><div class="stat-label">Envelope</div></div>
       </div>
+
+      <p class="tutorial-subtitle">The public surface decomposes as: <strong>71</strong> direct FFI symbols (authoritative list in <code>[ffi].exports</code> of <code>stryke.toml</code>) plus <strong>4</strong> pure-stryke composites (<code>find_stream</code>, <code>exists</code>, <code>find_value</code>, <code>collection_exists</code>) built over the primitives. Of those, a large fraction are <em>connection-free</em> &mdash; URI/namespace parsing, 5 validators, 9 ObjectId helpers, and 13 query/filter builders that emit ready-to-use MongoDB documents with no client at all.</p>
+
+      <table class="arch-table">
+        <thead><tr><th>Surface group</th><th>Functions</th></tr></thead>
+        <tbody>
+          <tr><td>Read paths</td><td><code>find</code>, <code>find_one</code>, <code>find_stream</code>, <code>count</code>, <code>aggregate</code> + composites <code>exists</code>, <code>find_value</code>, <code>collection_exists</code></td></tr>
+          <tr><td>Write paths</td><td><code>insert_one/many</code>, <code>update_one/many</code>, <code>replace_one</code>, <code>delete_one/many</code> (opts: <code>upsert</code>, <code>array_filters</code>)</td></tr>
+          <tr><td>Atomic findAndModify</td><td><code>find_one_and_update</code>, <code>find_one_and_replace</code>, <code>find_one_and_delete</code></td></tr>
+          <tr><td>Aggregation helpers</td><td><code>distinct</code>, <code>estimated_count</code>, <code>aggregate_db</code></td></tr>
+          <tr><td>Admin + diagnostics</td><td>collection/db create/drop/rename, index admin (create/drop/list/drop-all), <code>run_command</code>, <code>validate</code>, <code>coll_stats</code>, <code>db_stats</code>, <code>explain</code>, <code>server_status</code>, <code>ping</code></td></tr>
+          <tr><td>Pure URI/namespace helpers</td><td><code>parse/build/valid/redact_connection_string</code>, <code>parse/build_namespace</code>, <code>escape/unescape_regex</code></td></tr>
+          <tr><td>Validators</td><td><code>valid_collection_name</code>, <code>valid_database_name</code>, <code>valid_namespace</code>, <code>valid_field_name</code>, <code>valid_connection_string</code></td></tr>
+          <tr><td>ObjectId helpers (9)</td><td><code>is_valid_objectid</code>, <code>new_objectid</code>, <code>objectid_timestamp</code>, <code>parse_objectid</code>, <code>objectid_compare</code>, <code>build_objectid</code>, <code>objectid_from_time</code>, <code>objectid_max_from_time</code>, <code>objectid_range</code></td></tr>
+          <tr><td>Query builders (13)</td><td><code>merge_filters</code>, <code>or_filter</code>, <code>build_update</code>, <code>build_sort</code>, <code>build_projection</code>, <code>normalize_index_keys</code>, <code>in_filter</code>, <code>between_filter</code>, <code>build_regex_filter</code>, <code>exists_filter</code>, <code>elem_match_filter</code>, <code>text_filter</code>, <code>not_filter</code></td></tr>
+        </tbody>
+      </table>
 
       <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">~</span>ARCHITECTURE</h2>
@@ -133,10 +154,27 @@
 # response shape
 {"result": ...}            # success — per-fn shape
 {"error": "&lt;msg&gt;"}        # failure — wrapper die()s with the message</pre>
+      <p>BSON values cross the boundary as MongoDB <strong>relaxed extended JSON</strong>, so non-JSON types round-trip cleanly: <code>ObjectId</code> as <code>{"$oid": …}</code>, <code>DateTime</code> as <code>{"$date": …}</code>, <code>Decimal128</code> as <code>{"$numberDecimal": …}</code>, <code>Binary</code> as <code>{"$binary": {base64, subType}}</code>, <code>Regex</code> as <code>{"$regularExpression": {pattern, options}}</code>, <code>Timestamp</code> as <code>{"$timestamp": {t, i}}</code>. The same wrappers can be passed <em>back</em> through filters/updates and are re-parsed to real BSON before the wire.</p>
+
+      <hr class="section-rule">
+      <h2 class="tutorial-title"><span class="step-hash">@</span>DEPENDENCIES</h2>
+      <p>The cdylib links the official driver and the async stack; <code>panic = "abort"</code>, <code>lto = "thin"</code>, <code>strip = true</code>, <code>codegen-units = 1</code> in the release profile. Pulled in only by this package &mdash; never by core stryke.</p>
+      <table class="arch-table">
+        <thead><tr><th>Crate</th><th>Version</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr><td><code>mongodb</code></td><td>3 (features: rustls-tls, dns-resolver, compat-3-0-0)</td><td>official async MongoDB driver</td></tr>
+          <tr><td><code>bson</code></td><td>2</td><td>BSON &harr; extended-JSON conversion + ObjectId</td></tr>
+          <tr><td><code>tokio</code></td><td>1 (rt-multi-thread, macros, io-std, io-util)</td><td>shared async runtime held in OnceCell</td></tr>
+          <tr><td><code>futures-util</code></td><td>0.3</td><td>cursor stream collection</td></tr>
+          <tr><td><code>serde</code> / <code>serde_json</code></td><td>1 (preserve_order)</td><td>FFI JSON envelope (order-preserving)</td></tr>
+          <tr><td><code>anyhow</code></td><td>1</td><td>error context across the FFI boundary</td></tr>
+          <tr><td><code>once_cell</code> / <code>parking_lot</code></td><td>1 / 0.12</td><td>runtime + client cache</td></tr>
+        </tbody>
+      </table>
 
       <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">/</span>SCOPE</h2>
-      <p>See the README's <a href="https://github.com/MenkeTechnologies/stryke-mongo#readme">"Why this is a package"</a> + "API reference" sections for the authoritative scope. The package is intentionally narrower than its underlying SDK / driver &mdash; the goal is "useful from a shell pipeline", not "complete API coverage".</p>
+      <p>The full per-function reference (read/write/findAndModify/aggregation/admin/pure-helpers/query-builders, with signatures and option lists) is on the <a href="index.html">Docs page</a>; the README's <a href="https://github.com/MenkeTechnologies/stryke-mongo#readme">"Why this is a package"</a> + "API reference" sections are the upstream source of truth. The package is intentionally narrower than the underlying driver &mdash; the goal is "useful from a shell pipeline", not "complete API coverage". Not-yet-shipped: Change Streams, multi-doc transactions, <code>bulk_write</code>, GridFS (see the Docs roadmap).</p>
 
       <hr class="section-rule">
       <h2 class="tutorial-title"><span class="step-hash">#</span>PROJECT METADATA</h2>
