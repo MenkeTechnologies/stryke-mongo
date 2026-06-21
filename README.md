@@ -74,7 +74,7 @@ use Mongo
 $ENV{MONGODB_URI} = "mongodb://localhost:27017"
 
 # Insert / find / update / delete — target is `DB/COLLECTION`.
-my $r = Mongo::insert_one "app/users",
+val $r = Mongo::insert_one "app/users",
                           { name => "alice", age => 30, role => "admin" }
 p to_json $r->{inserted_id}             # { "$oid": "65f9..." }
 
@@ -86,7 +86,7 @@ Mongo::insert_many "app/users", [
 p Mongo::count "app/users"
 
 # Filters and operators use full Mongo query syntax.
-my @over30 = Mongo::find "app/users",
+val @over30 = Mongo::find "app/users",
                          filter => { age => { '$gt' => 30 } },
                          sort   => { age => -1 },
                          limit  => 100
@@ -95,7 +95,7 @@ my @over30 = Mongo::find "app/users",
 # Callback-per-doc variant (cdylib materializes the result, then iterates).
 Mongo::find_stream "app/events",
     filter   => { ts => { '$gte' => $cutoff } },
-    callback => sub ($d) { process $d }
+    callback => fn ($d) { process $d }
 
 # Updates.
 Mongo::update_one "app/users",
@@ -107,7 +107,7 @@ Mongo::update_many "app/users", { active => 1 }, { '$inc' => { score => 1 } }
 Mongo::replace_one "app/users", { _id => $oid }, { ...new doc... }
 
 # Aggregation pipeline (any standard stage).
-my @top = Mongo::aggregate "app/orders", [
+val @top = Mongo::aggregate "app/orders", [
     { '$match' => { status => "paid" } },
     { '$group' => { _id => '$customer', total => { '$sum' => '$amount' } } },
     { '$sort'  => { total => -1 } },
@@ -115,19 +115,19 @@ my @top = Mongo::aggregate "app/orders", [
 ]
 
 # Index admin.
-my $idx = Mongo::create_index "app/users", { email => 1 }
+val $idx = Mongo::create_index "app/users", { email => 1 }
 Mongo::indexes "app/users" |> ep
 Mongo::drop_index "app/users", $idx
 
 # Discovery.
-my @dbs   = Mongo::list_databases
-my @colls = Mongo::list_collections "app"
+val @dbs   = Mongo::list_databases
+val @colls = Mongo::list_collections "app"
 ```
 
 URI overrides on every public fn:
 
 ```stryke
-my %prod = (uri => "mongodb+srv://user:pass\@cluster.example.com")
+val %prod = (uri => "mongodb+srv://user:pass\@cluster.example.com")
 Mongo::find "logs/errors", filter => {...}, %prod
 ```
 
