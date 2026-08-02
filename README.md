@@ -30,7 +30,6 @@ tier.
 
 - [\[0x00\] Install](#0x00-install)
 - [\[0x01\] Quick start](#0x01-quick-start)
-- [\[0x02\] CLI: `mongo`](#0x02-cli-mongo)
 - [\[0x03\] API reference](#0x03-api-reference)
 - [\[0x04\] BSON type encoding](#0x04-bson-type-encoding)
 - [\[0x05\] FFI layer](#0x05-ffi-layer)
@@ -131,39 +130,6 @@ URI overrides on every public fn:
 ```stryke
 val %prod = (uri => "mongodb+srv://user:pass\@cluster.example.com")
 Mongo::find "logs/errors", filter => {...}, %prod
-```
-
-## [0x02] CLI: `mongo`
-
-```sh
-mongo find       app/users --filter='{"age":{"$gt":30}}' --sort='{"age":-1}' --limit=20
-mongo find-one   app/users --filter='{"name":"alice"}'
-mongo insert-one app/users --doc='{"name":"alice","age":30}'
-cat docs.ndjson | mongo insert-many app/users
-mongo update-one app/users --filter='{"name":"alice"}' --update='{"$set":{"role":"admin"}}'
-mongo update-many app/users --filter='{"active":true}' --update='{"$inc":{"score":1}}'
-mongo replace-one app/users --filter='{"_id":{"$oid":"..."}}' --doc='{"name":"x"}' --upsert
-mongo delete-one app/users --filter='{"name":"alice"}'
-mongo delete-many app/users --filter='{}'
-
-mongo count      app/users [--filter='{...}']
-mongo aggregate  app/users --pipeline='[{"$group":{"_id":"$role","n":{"$sum":1}}}]'
-
-mongo list-databases
-mongo list-collections app
-mongo create-index app/users --keys='{"email":1}' --unique --name=uniq_email
-mongo drop-index   app/users uniq_email
-mongo indexes      app/users
-
-mongo ping
-mongo build                              # cargo build --release
-mongo version
-```
-
-Global flags (also env vars):
-
-```
--u, --uri URI         $MONGODB_URI       # mongodb:// or mongodb+srv://
 ```
 
 ## [0x03] API reference
