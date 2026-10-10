@@ -30,13 +30,13 @@ tier.
 
 - [\[0x00\] Install](#0x00-install)
 - [\[0x01\] Quick start](#0x01-quick-start)
-- [\[0x03\] API reference](#0x03-api-reference)
-- [\[0x04\] BSON type encoding](#0x04-bson-type-encoding)
-- [\[0x05\] FFI layer](#0x05-ffi-layer)
-- [\[0x06\] Tests](#0x06-tests)
-- [\[0x07\] Dev workflow](#0x07-dev-workflow)
-- [\[0x08\] Layout](#0x08-layout)
-- [\[0x09\] Roadmap](#0x09-roadmap)
+- [\[0x02\] API reference](#0x02-api-reference)
+- [\[0x03\] BSON type encoding](#0x03-bson-type-encoding)
+- [\[0x04\] FFI layer](#0x04-ffi-layer)
+- [\[0x05\] Tests](#0x05-tests)
+- [\[0x06\] Dev workflow](#0x06-dev-workflow)
+- [\[0x07\] Layout](#0x07-layout)
+- [\[0x08\] Roadmap](#0x08-roadmap)
 - [\[0xFF\] License](#0xff-license)
 
 ---
@@ -132,7 +132,7 @@ val %prod = (uri => "mongodb+srv://user:pass\@cluster.example.com")
 Mongo::find "logs/errors", filter => {...}, %prod
 ```
 
-## [0x03] API reference
+## [0x02] API reference
 
 ### Read paths
 
@@ -271,10 +271,10 @@ Mongo::not_filter($field, \%expr) → \%filter   # { $field: { $not: {…} } }; 
 Mongo::version()        → $version_string       # cdylib's CARGO_PKG_VERSION
 ```
 
-## [0x04] BSON type encoding
+## [0x03] BSON type encoding
 
-The cdylib converts BSON ↔ JSON via MongoDB's **relaxed extended JSON**
-format, so non-JSON types round-trip cleanly:
+The cdylib converts BSON ↔ JSON with the `bson` crate serializer, which emits
+MongoDB extended-JSON wrappers for non-JSON types so they round-trip cleanly:
 
 | BSON | JSON |
 |---|---|
@@ -287,8 +287,8 @@ format, so non-JSON types round-trip cleanly:
 | `Array` | array |
 | `Document` | object |
 | `ObjectId` | `{"$oid": "65f9b1d2c3f6e9...."}` |
-| `DateTime` | `{"$date": "2026-05-17T02:30:00Z"}` |
-| `Binary` | `{"$binary": {"base64":"…","subType":"00"}}` |
+| `DateTime` | `{"$date": {"$numberLong": "1778985000000"}}` (epoch milliseconds) |
+| `Binary` | `{"$binary": {"base64":"…","subType":"80"}}` (generic subtype `00` serializes as an array of byte values) |
 | `UUID` | wrapped via `$binary` subtype 04 |
 | `Regex` | `{"$regularExpression": {"pattern":"^foo","options":"i"}}` |
 | `Timestamp` | `{"$timestamp": {"t":..., "i":...}}` |
@@ -297,7 +297,7 @@ You can pass extended-JSON wrappers back through filters / updates: a
 filter like `{"_id": {"$oid": "65f9…"}}` will be re-parsed to a real
 `ObjectId` before hitting the wire.
 
-## [0x05] FFI layer
+## [0x04] FFI layer
 
 Each `Mongo::*` wrapper builds a JSON args dict and calls a sibling
 `mongo__*` symbol resolved out of `libstryke_mongo.{dylib,so}`. The
@@ -316,27 +316,7 @@ list is `[ffi].exports` in
 Errors come back as a `{error}` JSON payload; the stryke wrapper dies
 with `Mongo::<op>: <reason>`.
 
-<details>
-<summary>v1 wire shape (historical helper binary)</summary>
-
-```sh
-stryke-mongo-helper find app/users --filter='{"name":"alice"}' --limit=10
-stryke-mongo-helper insert-one app/users --doc='{"name":"alice"}'
-cat docs.ndjson | stryke-mongo-helper insert-many app/users
-stryke-mongo-helper aggregate app/orders \
-    --pipeline='[{"$group":{"_id":"$customer","total":{"$sum":"$amount"}}}]'
-```
-
-Output:
-
-* `find`, `aggregate`, `list-databases`, `list-collections`, `indexes` → NDJSON
-* `find-one` → single JSON doc (or `null`)
-* writes / metadata → single JSON summary
-* errors → stderr + non-zero exit
-
-</details>
-
-## [0x06] Tests
+## [0x05] Tests
 
 ```sh
 cargo test                            # compiles, no live calls
@@ -352,7 +332,7 @@ brew install mongodb-community
 mongod --dbpath /tmp/mdb --port 27017 &
 ```
 
-## [0x07] Dev workflow
+## [0x06] Dev workflow
 
 ```sh
 make             # release build
@@ -362,12 +342,12 @@ make install
 make clean
 ```
 
-## [0x08] Layout
+## [0x07] Layout
 
 ```
 stryke-mongo/
   stryke.toml                      # stryke package manifest
-  Cargo.toml                       # Rust helper crate manifest
+  Cargo.toml                       # cdylib crate manifest
   Makefile
   src/lib.rs                       # single-file cdylib
   lib/
@@ -386,7 +366,7 @@ stryke-mongo/
     release.yml                    # cross-compile + GH release on tag push
 ```
 
-## [0x09] Roadmap
+## [0x08] Roadmap
 
 Shipped: CRUD + aggregate (collection and database level) + index admin (create/
 drop/list, plus drop-all), atomic findAndModify (update/replace/delete), distinct,
